@@ -13,8 +13,9 @@ import prepare
 @dataclass(frozen=True)
 class VQEConfig:
     ansatz: str = "hea"
-    layers: int = 2
-    init_mode: str = "random"
+    layers: int | None = None
+    state_mode: str = "auto"
+    param_init: str = "small_random"
     optimizer: str = "cobyla"
     max_evals: int = prepare.MAX_EVALS
     seed: int = prepare.SEED
@@ -22,6 +23,12 @@ class VQEConfig:
 
 def build_initial_state(num_qubits: int, mode: str, hint: object | None) -> QuantumCircuit:
     circuit = QuantumCircuit(num_qubits)
+    if mode == "empty":
+        return circuit
+
+    if mode == "auto":
+        mode = "hf_like" if hint is not None else "empty"
+
     if mode != "hf_like":
         return circuit
 
@@ -37,22 +44,57 @@ def build_initial_state(num_qubits: int, mode: str, hint: object | None) -> Quan
     return circuit
 
 
-def build_hea_ansatz(num_qubits: int, layers: int, initial_state: QuantumCircuit) -> tuple[QuantumCircuit, ParameterVector]:
-    num_params = 2 * layers * num_qubits
+def default_layers(num_qubits: int, configured_layers: int | None) -> int:
+    if configured_layers is not None:
+        return configured_layers
+    if num_qubits <= 2:
+        return 1
+    if num_qubits <= 6:
+        return 2
+    return 3
+
+
+def entangler_edges(problem: prepare.Problem) -> list[tuple[int, int]]:
+    if not problem.coupling_map:
+        return [(qubit, qubit + 1) for qubit in range(problem.num_qubits - 1)]
+
+    edges: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for raw_control, raw_target in problem.coupling_map:
+        if raw_control == raw_target:
+            continue
+        edge = tuple(sorted((raw_control, raw_target)))
+        if edge in seen:
+            continue
+        seen.add(edge)
+        edges.append(edge)
+
+    if edges:
+        return edges
+    return [(qubit, qubit + 1) for qubit in range(problem.num_qubits - 1)]
+
+
+def build_hea_ansatz(
+    problem: prepare.Problem,
+    layers: int,
+    initial_state: QuantumCircuit,
+) -> tuple[QuantumCircuit, ParameterVector]:
+    num_params = 2 * layers * problem.num_qubits
     theta = ParameterVector("theta", num_params)
-    circuit = QuantumCircuit(num_qubits)
+    circuit = QuantumCircuit(problem.num_qubits)
     circuit.compose(initial_state, inplace=True)
+    edges = entangler_edges(problem)
 
     cursor = 0
     for _ in range(layers):
-        for qubit in range(num_qubits):
+        for qubit in range(problem.num_qubits):
             circuit.ry(theta[cursor], qubit)
             cursor += 1
-        for qubit in range(num_qubits):
+        for qubit in range(problem.num_qubits):
             circuit.rz(theta[cursor], qubit)
             cursor += 1
-        for qubit in range(num_qubits - 1):
-            circuit.cx(qubit, qubit + 1)
+        for control, target in edges:
+            circuit.cx(control, target)
 
     return circuit, theta
 
@@ -137,25 +179,26 @@ def build_qaoa_ansatz(
 def build_ansatz(
     problem: prepare.Problem, config: VQEConfig
 ) -> tuple[QuantumCircuit, ParameterVector]:
-    initial_state = build_initial_state(problem.num_qubits, config.init_mode, problem.initial_state_hint)
+    initial_state = build_initial_state(problem.num_qubits, config.state_mode, problem.initial_state_hint)
+    layers = default_layers(problem.num_qubits, config.layers)
     if config.ansatz == "hea":
-        return build_hea_ansatz(problem.num_qubits, config.layers, initial_state)
+        return build_hea_ansatz(problem, layers, initial_state)
     if config.ansatz == "symm":
-        return build_symm_ansatz(problem.num_qubits, config.layers, initial_state)
+        return build_symm_ansatz(problem.num_qubits, layers, initial_state)
     if config.ansatz == "qaoa":
-        return build_qaoa_ansatz(problem, config.layers, initial_state)
+        return build_qaoa_ansatz(problem, layers, initial_state)
     raise ValueError(f"unsupported ansatz family: {config.ansatz}")
 
 
 def initial_parameters(config: VQEConfig, num_params: int) -> np.ndarray:
-    if config.init_mode == "zeros":
+    if config.param_init == "zeros":
         return np.zeros(num_params, dtype=float)
     rng = np.random.default_rng(config.seed)
-    if config.init_mode == "random":
+    if config.param_init == "random":
         return rng.uniform(-0.2, 0.2, size=num_params)
-    if config.init_mode == "hf_like":
+    if config.param_init == "small_random":
         return rng.uniform(-0.05, 0.05, size=num_params)
-    raise ValueError(f"unsupported init mode: {config.init_mode}")
+    raise ValueError(f"unsupported parameter init mode: {config.param_init}")
 
 
 def bind_parameters(circuit: QuantumCircuit, parameters: ParameterVector, values: np.ndarray) -> QuantumCircuit:
@@ -178,11 +221,23 @@ def optimize_energy(
         return prepare.energy_from_circuit(candidate, problem.hamiltonian)
 
     initial = initial_parameters(config, len(parameters))
+    optimizer = config.optimizer.lower()
+    if optimizer == "cobyla":
+        method = "COBYLA"
+        options = {"maxiter": config.max_evals, "rhobeg": 0.5}
+    elif optimizer == "powell":
+        method = "Powell"
+        options = {"maxfev": config.max_evals, "xtol": 1e-4, "ftol": 1e-8}
+    elif optimizer == "nelder-mead":
+        method = "Nelder-Mead"
+        options = {"maxfev": config.max_evals, "xatol": 1e-4, "fatol": 1e-8}
+    else:
+        raise ValueError(f"unsupported optimizer: {config.optimizer}")
     result = minimize(
         objective,
         initial,
-        method="COBYLA",
-        options={"maxiter": config.max_evals, "rhobeg": 0.5},
+        method=method,
+        options=options,
     )
     best_values = np.asarray(result.x, dtype=float)
     best_energy = float(result.fun)

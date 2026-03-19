@@ -42,6 +42,8 @@ uv run train.py
 
 **Simplicity criterion**: All else being equal, simpler is better. A tiny energy improvement that adds ugly complexity is usually not worth it. A tiny energy improvement from deleting code probably is worth it. Equal energy with materially simpler code is a win. In particular, if two approaches reach the same or nearly the same energy, prefer the one with fewer variational parameters. Reducing compiled gate count, especially two-qubit gate count and total depth, also counts as a real improvement even when the energy gain is small or zero.
 
+Once a run reaches the reference energy, or is effectively tied with the current best energy, do not stop. Continue searching for a simpler solution that preserves the same or nearly the same energy while reducing, in order of priority: `num_params`, `twoq_count`, `total_gate_count`, and `depth`. Only stop this compression phase when repeated experiments fail to find a candidate that matches or improves the current energy while improving one or more of those four metrics.
+
 **The first run**: Your very first run should always establish the baseline, so run the training script as is.
 
 ## Output Format
@@ -111,6 +113,7 @@ LOOP FOREVER:
 7. Record the result in `results.tsv`. Leave `results.tsv` untracked by git.
 8. If energy improved, keep the commit and advance the branch.
 9. If energy is equal or worse, reset back to where you started unless the code became clearly simpler at no performance cost.
+10. If energy is equal or nearly equal to the best known result, switch into compression mode and keep pushing for fewer parameters, fewer two-qubit gates, fewer total gates, and lower depth before considering the search exhausted.
 
 **Timeout**: If you are using a fixed time budget for comparison, enforce the same budget for every candidate and kill obviously hung runs.
 

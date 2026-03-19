@@ -1,0 +1,45 @@
+{
+  "name": "h2_2q_example",
+  "pauli_terms": [
+    {
+      "pauli": "II",
+      "coeff": -1.052373245772859
+    },
+    {
+      "pauli": "IZ",
+      "coeff": 0.39793742484318045
+    },
+    {
+      "pauli": "ZI",
+      "coeff": -0.39793742484318045
+    },
+    {
+      "pauli": "ZZ",
+      "coeff": -0.01128010425623538
+    },
+    {
+      "pauli": "XX",
+      "coeff": 0.18093119978423156
+    }
+  ],
+  "basis_gates": [
+    "rx",
+    "ry",
+    "rz",
+    "cx"
+  ],
+  "coupling_map": [
+    [
+      0,
+      1
+    ],
+    [
+      1,
+      0
+    ]
+  ],
+  "initial_state_hint": [
+    1,
+    0
+  ]
+}

@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.python-version
+results.tsv
+run.log
+.DS_Store
+.pytest_cache/
+*.egg-info/

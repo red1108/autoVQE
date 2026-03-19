@@ -40,7 +40,7 @@ uv run train.py
 
 **The goal is simple: get the lowest energy.** If a reference energy is available, `delta_e` is useful context but not the primary decision rule. Hardware-aware metrics matter, but they are secondary. Track `singleq_count`, `twoq_count`, `total_gate_count`, `depth`, and `num_params`, but do not keep a change that worsens energy unless it clearly simplifies the code at no real performance cost.
 
-**Simplicity criterion**: All else being equal, simpler is better. A tiny energy improvement that adds ugly complexity is usually not worth it. A tiny energy improvement from deleting code probably is worth it. Equal energy with materially simpler code is a win.
+**Simplicity criterion**: All else being equal, simpler is better. A tiny energy improvement that adds ugly complexity is usually not worth it. A tiny energy improvement from deleting code probably is worth it. Equal energy with materially simpler code is a win. In particular, if two approaches reach the same or nearly the same energy, prefer the one with fewer variational parameters. Reducing compiled gate count, especially two-qubit gate count and total depth, also counts as a real improvement even when the energy gain is small or zero.
 
 **The first run**: Your very first run should always establish the baseline, so run the training script as is.
 
@@ -67,6 +67,8 @@ If a metric is unavailable, omit the line instead of inventing placeholders.
 ## Logging Results
 
 When an experiment is done, log it to `results.tsv` as tab-separated values, not comma-separated values.
+
+When deciding `keep` vs `discard`, use energy as the primary metric. If energies are equal or nearly equal, prefer the run with fewer variational parameters, fewer two-qubit gates, fewer total gates, and lower depth. A run that matches the best energy with materially lower parameter count or compiled circuit cost should usually be marked `keep`.
 
 The TSV has a header row and 8 columns:
 

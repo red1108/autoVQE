@@ -1,66 +1,16 @@
 {
-  "name": "h2_4q_pennylane_example",
+  "name": "ising_1d_5q_open_chain",
   "pauli_terms": [
-    {
-      "pauli": "IIII",
-      "coeff": -0.09963387941370971
-    },
-    {
-      "pauli": "IIIZ",
-      "coeff": 0.17110545123720233
-    },
-    {
-      "pauli": "IIZI",
-      "coeff": 0.17110545123720225
-    },
-    {
-      "pauli": "IIZZ",
-      "coeff": 0.16859349595532533
-    },
-    {
-      "pauli": "YXXY",
-      "coeff": 0.04533062254573469
-    },
-    {
-      "pauli": "XXYY",
-      "coeff": -0.04533062254573469
-    },
-    {
-      "pauli": "YYXX",
-      "coeff": -0.04533062254573469
-    },
-    {
-      "pauli": "XYYX",
-      "coeff": 0.04533062254573469
-    },
-    {
-      "pauli": "IZII",
-      "coeff": -0.22250914236600539
-    },
-    {
-      "pauli": "IZIZ",
-      "coeff": 0.12051027989546245
-    },
-    {
-      "pauli": "ZIII",
-      "coeff": -0.22250914236600539
-    },
-    {
-      "pauli": "ZIIZ",
-      "coeff": 0.16584090244119712
-    },
-    {
-      "pauli": "IZZI",
-      "coeff": 0.16584090244119712
-    },
-    {
-      "pauli": "ZIZI",
-      "coeff": 0.12051027989546245
-    },
-    {
-      "pauli": "ZZII",
-      "coeff": 0.1743207725924201
-    }
+    { "pauli": "ZZIII", "coeff": 1.0 },
+    { "pauli": "IZZII", "coeff": 1.0 },
+    { "pauli": "IIZZI", "coeff": 1.0 },
+    { "pauli": "IIIZZ", "coeff": 1.0 },
+
+    { "pauli": "XIIII", "coeff": 1.0 },
+    { "pauli": "IXIII", "coeff": 1.0 },
+    { "pauli": "IIXII", "coeff": 1.0 },
+    { "pauli": "IIIXI", "coeff": 1.0 },
+    { "pauli": "IIIIX", "coeff": 1.0 }
   ],
   "basis_gates": [
     "rx",
@@ -69,35 +19,12 @@
     "cx"
   ],
   "coupling_map": [
-    [
-      0,
-      1
-    ],
-    [
-      1,
-      0
-    ],
-    [
-      1,
-      2
-    ],
-    [
-      2,
-      1
-    ],
-    [
-      2,
-      3
-    ],
-    [
-      3,
-      2
-    ]
+    [0,1],[1,0],
+    [1,2],[2,1],
+    [2,3],[3,2],
+    [3,4],[4,3]
   ],
   "initial_state_hint": [
-    1,
-    1,
-    0,
-    0
+    0, 0, 0, 0, 0
   ]
 }

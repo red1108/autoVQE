@@ -30,17 +30,18 @@ uv run train.py
 ```
 
 **What you CAN do:**
-- Modify `train.py` — this is the only file you edit during autonomous research. Everything inside that file is fair game: ansatz, initialization, optimizer, parameterization, restart strategy, and other VQE choices.
+- Modify `train.py` — this is the only file you edit during autonomous research. Everything inside that file is fair game: ansatz, optimizer, parameterization, restart strategy, training loop, and other VQE choices.
 
 **What you CANNOT do:**
 - Modify `prepare.py`. It is read-only. It contains the fixed harness and evaluation helpers.
 - Modify `problem.json`. The problem is fixed during a run.
 - Install new packages or add dependencies. You can only use what is already in `pyproject.toml`.
 - Break the plain summary output format in a way that makes simple parsing harder.
+- Modify the evaluation harness. the `energy_from_circuit` function is the only way to get energy estimates, and it must not be modified.
 
-**The goal is simple: get the lowest energy.** If a reference energy is available, `delta_e` is useful context but not the primary decision rule. Hardware-aware metrics matter, but they are secondary. Track `singleq_count`, `twoq_count`, `total_gate_count`, `depth`, and `num_params`, but do not keep a change that worsens energy unless it clearly simplifies the code at no real performance cost.
+**The goal is simple: get the lowest energy.**
 
-**Simplicity criterion**: All else being equal, simpler is better. A tiny energy improvement that adds ugly complexity is usually not worth it. A tiny energy improvement from deleting code probably is worth it. Equal energy with materially simpler code is a win. In particular, if two approaches reach the same or nearly the same energy, prefer the one with fewer variational parameters. Reducing compiled gate count, especially two-qubit gate count and total depth, also counts as a real improvement even when the energy gain is small or zero.
+**Simplicity criterion**: All else being equal, simpler is better. A tiny energy improvement that adds ugly complexity is usually not worth it. A tiny energy improvement from reducing the number of gates or parameters is a great improvement — that's a simplification win. When evaluating whether to keep a change, weigh the gate count against the improvement magnitude. A 1% energy improvement that doubles the parameter or gate count is probably not worth it. A 1% energy improvement from reduces the parameter/gate count? Definitely keep. An improvement of ~0 but much simpler structure? Keep.
 
 Once a run reaches the reference energy, or is effectively tied with the current best energy, do not stop. Continue searching for a simpler solution that preserves the same or nearly the same energy while reducing, in order of priority: `num_params`, `twoq_count`, `total_gate_count`, and `depth`. Only stop this compression phase when repeated experiments fail to find a candidate that matches or improves the current energy while improving one or more of those four metrics.
 
@@ -53,8 +54,6 @@ Once the script finishes it prints a summary like this:
 ```text
 ---
 energy:           -1.234567
-reference_energy: -1.235100
-delta_e:          0.000533
 singleq_count:    40
 twoq_count:       24
 total_gate_count: 64
@@ -70,15 +69,13 @@ If a metric is unavailable, omit the line instead of inventing placeholders.
 
 When an experiment is done, log it to `results.tsv` as tab-separated values, not comma-separated values.
 
-When deciding `keep` vs `discard`, use energy as the primary metric. If energies are equal or nearly equal, prefer the run with fewer variational parameters, fewer two-qubit gates, fewer total gates, and lower depth. A run that matches the best energy with materially lower parameter count or compiled circuit cost should usually be marked `keep`.
-
 The TSV has a header row and 8 columns:
 
 ```text
 commit	energy	singleq_count	twoq_count	total_gate_count	num_params	status	description
 ```
 
-1. git commit hash, short form
+1. git commit hash (short, 7 chars)
 2. best energy achieved, for example `-1.234567`
 3. compiled single-qubit gate count
 4. compiled two-qubit gate count
@@ -102,8 +99,8 @@ The experiment runs on a dedicated branch such as `autovqe/mar19`.
 
 LOOP FOREVER:
 
-1. Look at the current git branch and commit.
-2. Tune `train.py` with one experimental idea by directly editing the file.
+1. Look at the git state: the current branch/commit we're on
+2. Tune `train.py` with one experimental idea by directly hacking the file.
 3. git commit.
 4. Run the experiment:
    `uv run train.py > run.log 2>&1`

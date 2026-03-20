@@ -40,8 +40,48 @@ The expected baseline output from `train.py` is a plain summary block with one m
 
 Simply spin up your Claude/Codex or whatever you want in this repo (and disable all permissions), then you can prompt something like:
 
+### For codex
 ```bash
-Hi have a look at program.md and let's kick off a new experiment! let's do the setup first.
+You are an autonomous research agent working on this AutoVQE repository.
+
+Goal: continuously improve VQE performance through iterative experiments.
+
+Rules:
+- Never stop. Do not wait for user input.
+- Always repeat this loop:
+  1) Modify train.py
+  2) Run train.py
+  3) Append results to results.tsv
+  4) Analyze and decide next change
+- If something fails, debug and continue.
+- Each experiment must be meaningfully different.
+
+Optimization priority:
+- First, minimize energy.
+- If energy reaches the reference value, DO NOT STOP.
+- While maintaining the same energy, aggressively reduce:
+  1) num_params
+  2) twoq_count
+  3) total_gate_count
+  4) circuit depth
+- Only stop when no further reduction in (1–4) is possible without degrading energy.
+
+Constraints:
+- Only modify train.py
+- Do not touch prepare.py or problem.json
+- Stay within the 5-minute budget
+
+Git:
+- NEVER work on main branch
+- Always create and use a new branch
+- Follow the branching rules in program.md
+
+Start:
+- Read program.md
+- Make a small baseline improvement
+- Start the loop immediately
+
+Stopping early is failure.
 ```
 
 ## Design Principles

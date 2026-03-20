@@ -23,6 +23,8 @@ Once you get confirmation, kick off the experimentation.
 
 Each experiment is evaluated on the single fixed Hamiltonian in `problem.json`.
 
+Each experiment runs under a fixed wall-clock optimization budget of `2^n_qubits` seconds, where `n_qubits` is defined by `problem.json`. For example, a 5-qubit problem gets 32 seconds. This fixed budget is part of the experimental design, so candidates should be compared under the same time limit.
+
 You launch the baseline simply as:
 
 ```bash
@@ -38,6 +40,7 @@ uv run train.py
 - Install new packages or add dependencies. You can only use what is already in `pyproject.toml`.
 - Break the plain summary output format in a way that makes simple parsing harder.
 - Modify the evaluation harness. the `energy_from_circuit` function is the only way to get energy estimates, and it must not be modified.
+- Do not change fixed time budget. Each run must be compared under the same time limit.
 - Modify the initial state preparation. The initial state is fixed to be the all-zeros state, and you cannot modify that.
 - Do not cheat by hardcoding rotation angles or other variational degrees of freedom. Every tunable rotation gate in the ansatz must be represented as an explicit optimization parameter and counted in `num_params`. You may reduce the number of parameters only by legitimately simplifying the ansatz structure, tying parameters together intentionally, or removing gates entirely — not by freezing previously tuned values into constants and claiming the circuit is parameter-free.
 

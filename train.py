@@ -14,7 +14,7 @@ class VQEConfig:
     layers: int | None = None
     optimizer: str = "adam"
     param_init: str = "small_random"
-    epochs: int = 40
+    time_budget_seconds: float | None = None
     learning_rate: float = 0.2
     gradient_epsilon: float = 1e-3
     adam_beta1: float = 0.9
@@ -84,6 +84,12 @@ def bind_parameters(circuit: QuantumCircuit, parameters: ParameterVector, values
     return circuit.assign_parameters(dict(zip(parameters, values, strict=True)), inplace=False)
 
 
+def training_time_budget(problem: prepare.Problem, config: VQEConfig) -> float:
+    if config.time_budget_seconds is not None:
+        return float(config.time_budget_seconds)
+    return float(2**problem.num_qubits)
+
+
 def optimize_energy(
     problem: prepare.Problem,
     circuit: QuantumCircuit,
@@ -107,6 +113,7 @@ def optimize_energy(
     best_energy = current_energy
     epsilon = float(config.gradient_epsilon)
     optimizer = config.optimizer.lower()
+    deadline = time.perf_counter() + training_time_budget(problem, config)
 
     if optimizer == "adam":
         m = np.zeros(len(parameters), dtype=float)
@@ -114,10 +121,14 @@ def optimize_energy(
         beta1 = float(config.adam_beta1)
         beta2 = float(config.adam_beta2)
         adam_epsilon = float(config.adam_epsilon)
+        step = 0
 
-        for step in range(1, config.epochs + 1):
+        while time.perf_counter() < deadline:
+            step += 1
             gradient = np.zeros(len(parameters), dtype=float)
             for index in range(len(parameters)):
+                if time.perf_counter() >= deadline:
+                    break
                 shifted = values.copy()
                 shifted[index] += epsilon
                 shifted_energy = objective(shifted)
@@ -140,9 +151,11 @@ def optimize_energy(
         return best_values, best_energy, calls
 
     if optimizer in {"gradient_descent", "gradient-descent", "gd"}:
-        for _ in range(config.epochs):
+        while time.perf_counter() < deadline:
             gradient = np.zeros(len(parameters), dtype=float)
             for index in range(len(parameters)):
+                if time.perf_counter() >= deadline:
+                    break
                 shifted = values.copy()
                 shifted[index] += epsilon
                 shifted_energy = objective(shifted)

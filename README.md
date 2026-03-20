@@ -12,7 +12,9 @@ Following the philosophy of [autoresearch](https://github.com/karpathy/autoresea
 - `train.py` is the main research script. This is where you implement and modify the VQE ansatz, initialization, optimization loop, and final summary output. You are encouraged to experiment here freely with different ansatz families, optimizers, and search strategies.
 - `results.tsv` is a lightweight experiment log. After each run, append one row with the commit hash, final energy, single-qubit gate count, two-qubit gate count, total gate count, parameter count, run status, and a short description of the change.
 
-Each run uses the same fixed 5-minute wall-clock optimization budget, excluding startup and preparation time. This keeps comparisons simple, fair, and iteration-friendly.
+By design, each VQE run uses a fixed wall-clock optimization budget, following the same broad philosophy as autoresearch. In AutoVQE the budget is problem-dependent: each run gets `2^n_qubits` seconds, where `n_qubits` comes from `problem.json`. For example, a 5-qubit problem gets 32 seconds.
+
+Each run uses the same fixed wall-clock optimization budget for a given problem instance. This keeps comparisons simple, fair, and iteration-friendly.
 
 ## Project Structure
 
@@ -61,7 +63,7 @@ If branch operations are blocked by the environment, continue the experiment loo
 ## Design Principles
 
 - **Simplicity**: Simple is better. Especially in the quantum domain, complicated design is often not better. Keep the structure as simple as possible.
-- **Fixed time budget**: Use a fixed wall-clock time budget for optimization to keep comparisons fair and iteration-friendly. You can try 100 experiments while you sleep.
+- **Fixed time budget.** Experiments are compared under a fixed wall-clock budget of `2^n_qubits` seconds for the current problem, so ansatz and optimizer changes are judged fairly within the same time limit.
 - **Self-contained**: No complex config.
 
 # License

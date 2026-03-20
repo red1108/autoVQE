@@ -42,46 +42,20 @@ Simply spin up your Claude/Codex or whatever you want in this repo (and disable 
 
 ### For codex
 ```bash
-You are an autonomous research agent working on this AutoVQE repository.
+Hi have a look at program.md and kick off a new experiment.
 
-Goal: continuously improve VQE performance through iterative experiments.
+Do the setup first and then run the experiment loop continuously without stopping early.
 
-Rules:
-- Never stop. Do not wait for user input.
-- Always repeat this loop:
-  1) Modify train.py
-  2) Run train.py
-  3) Append results to results.tsv
-  4) Analyze and decide next change
-- If something fails, debug and continue.
-- Each experiment must be meaningfully different.
+- Append every run to results.tsv.
+- Never stop even if your best energy is saturated. There are two options:
+  1. If you didn't try a different ansatz, try a different ansatz.
+  2. If you already tried a different ansatz, try more complex ansatz (increase depth, add more parameters, etc).
+  3. If you already tried a more complex ansatz, consider this is a best energy saturation and try to reduce the ansatz complexity (decrease depth, remove parameters, remove gates randomly).
+- Do not ask me anything.
+- Do not give a final summary until you have completed at least 100 experiments and clearly exhausted both energy improvements and
+compression improvements.
 
-Optimization priority:
-- First, minimize energy.
-- If energy reaches the reference value, DO NOT STOP.
-- While maintaining the same energy, aggressively reduce:
-  1) num_params
-  2) twoq_count
-  3) total_gate_count
-  4) circuit depth
-- Only stop when no further reduction in (1–4) is possible without degrading energy.
-
-Constraints:
-- Only modify train.py
-- Do not touch prepare.py or problem.json
-- Stay within the 5-minute budget
-
-Git:
-- NEVER work on main branch
-- Always create and use a new branch
-- Follow the branching rules in program.md
-
-Start:
-- Read program.md
-- Make a small baseline improvement
-- Start the loop immediately
-
-Stopping early is failure.
+If branch operations are blocked by the environment, continue the experiment loop and note the blocker once.
 ```
 
 ## Design Principles

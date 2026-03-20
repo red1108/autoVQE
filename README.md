@@ -50,7 +50,7 @@ Do the setup first and then run the experiment loop continuously without stoppin
 - Never stop even if your best energy is saturated. There are two options:
   1. If you didn't try a different ansatz, try a different ansatz.
   2. If you already tried a different ansatz, try more complex ansatz (increase depth, add more parameters, etc).
-  3. If you already tried a more complex ansatz, consider this is a best energy saturation and try to reduce the ansatz complexity (decrease depth, remove parameters, remove gates randomly).
+  3. If you already tried a more complex ansatz, consider this is a best energy saturation and try to reduce the ansatz complexity (decrease depth, decrease two qubit gate count, decrease total gate count, remove parameters, randomly remove gates).
 - Do not ask me anything.
 - Do not give a final summary until you have completed at least 100 experiments and clearly exhausted both energy improvements and
 compression improvements.

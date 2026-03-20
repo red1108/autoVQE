@@ -38,12 +38,14 @@ uv run train.py
 - Install new packages or add dependencies. You can only use what is already in `pyproject.toml`.
 - Break the plain summary output format in a way that makes simple parsing harder.
 - Modify the evaluation harness. the `energy_from_circuit` function is the only way to get energy estimates, and it must not be modified.
+- Modify the initial state preparation. The initial state is fixed to be the all-zeros state, and you cannot modify that.
+- Do not cheat by hardcoding rotation angles or other variational degrees of freedom. Every tunable rotation gate in the ansatz must be represented as an explicit optimization parameter and counted in `num_params`. You may reduce the number of parameters only by legitimately simplifying the ansatz structure, tying parameters together intentionally, or removing gates entirely — not by freezing previously tuned values into constants and claiming the circuit is parameter-free.
 
 **The goal is simple: get the lowest energy.**
 
-**Simplicity criterion**: All else being equal, simpler is better. A tiny energy improvement that adds ugly complexity is usually not worth it. A tiny energy improvement from reducing the number of gates or parameters is a great improvement — that's a simplification win. When evaluating whether to keep a change, weigh the gate count against the improvement magnitude. A 1% energy improvement that doubles the parameter or gate count is probably not worth it. A 1% energy improvement from reduces the parameter/gate count? Definitely keep. An improvement of ~0 but much simpler structure? Keep.
+**Simplicity criterion**: All else being equal, simpler is better. A tiny energy improvement that adds ugly complexity is usually not worth it. A tiny energy improvement from reducing the number of gates is a great improvement — that's a simplification win. When evaluating whether to keep a change, weigh the gate count against the improvement magnitude. A 1% energy improvement that doubles the parameter or gate count is probably not worth it. A 1% energy improvement from reduces the parameter/gate count? Definitely keep. An improvement of ~0 but much simpler structure? Keep. Notably, reducing the two-qubit gate count is a bigger simplification win than reducing the single-qubit gate count.
 
-Once a run reaches the reference energy, or is effectively tied with the current best energy, do not stop. Continue searching for a simpler solution that preserves the same or nearly the same energy while reducing, in order of priority: `num_params`, `twoq_count`, `total_gate_count`, and `depth`. Only stop this compression phase when repeated experiments fail to find a candidate that matches or improves the current energy while improving one or more of those four metrics.
+Once a run reaches the reference energy, or is effectively tied with the current best energy, do not stop. Continue searching for a simpler solution that preserves the same or nearly the same energy while reducing, in order of priority: `twoq_count`, `total_gate_count`, `depth` and `num_params`. Only stop this compression phase when repeated experiments fail to find a candidate that matches or improves the current energy while improving one or more of those four metrics.
 
 **The first run**: Your very first run should always establish the baseline, so run the training script as is.
 

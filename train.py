@@ -258,14 +258,9 @@ def main() -> None:
     _, compiled = prepare.transpile_and_report(final_circuit, backend_target)
     overlap = prepare.overlap_with_reference(final_circuit, problem.reference_state)
 
-    delta_e = None
-    if problem.reference_energy is not None:
-        delta_e = energy - problem.reference_energy
-
     summary = [
         ("energy", energy),
         ("reference_energy", problem.reference_energy),
-        ("delta_e", delta_e),
         ("overlap", overlap),
         ("singleq_count", compiled["singleq_count"]),
         ("twoq_count", compiled["twoq_count"]),

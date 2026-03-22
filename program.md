@@ -23,7 +23,7 @@ Once you get confirmation, kick off the experimentation.
 
 Each experiment is evaluated on the single fixed Hamiltonian in `problem.json`.
 
-Each experiment runs under a fixed wall-clock optimization budget of `2^n_qubits` seconds, where `n_qubits` is defined by `problem.json`. For example, a 5-qubit problem gets 32 seconds. This fixed budget is part of the experimental design, so candidates should be compared under the same time limit.
+Each experiment runs under a fixed wall-clock optimization budget of `2^(n_qubits-2)` seconds, where `n_qubits` is defined by `problem.json`. For example, a 9-qubit problem gets 128 seconds. This fixed budget is part of the experimental design, so candidates should be compared under the same time limit.
 
 You launch the baseline simply as:
 

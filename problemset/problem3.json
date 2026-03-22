@@ -1,0 +1,30 @@
+{
+  "name": "ising_1d_5q_open_chain",
+  "pauli_terms": [
+    { "pauli": "ZZIII", "coeff": 1.0 },
+    { "pauli": "IZZII", "coeff": 1.0 },
+    { "pauli": "IIZZI", "coeff": 1.0 },
+    { "pauli": "IIIZZ", "coeff": 1.0 },
+
+    { "pauli": "XIIII", "coeff": 1.0 },
+    { "pauli": "IXIII", "coeff": 1.0 },
+    { "pauli": "IIXII", "coeff": 1.0 },
+    { "pauli": "IIIXI", "coeff": 1.0 },
+    { "pauli": "IIIIX", "coeff": 1.0 }
+  ],
+  "basis_gates": [
+    "rx",
+    "ry",
+    "rz",
+    "cx"
+  ],
+  "coupling_map": [
+    [0,1],[1,0],
+    [1,2],[2,1],
+    [2,3],[3,2],
+    [3,4],[4,3]
+  ],
+  "initial_state_hint": [
+    0, 0, 0, 0, 0
+  ]
+}

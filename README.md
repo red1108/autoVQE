@@ -12,7 +12,7 @@ Following the philosophy of [autoresearch](https://github.com/karpathy/autoresea
 - `train.py` is the main research script. This is where you implement and modify the VQE ansatz, initialization, optimization loop, and final summary output. You are encouraged to experiment here freely with different ansatz families, optimizers, and search strategies.
 - `results.tsv` is a lightweight experiment log. After each run, append one row with the commit hash, final energy, single-qubit gate count, two-qubit gate count, total gate count, parameter count, run status, and a short description of the change.
 
-By design, each VQE run uses a fixed wall-clock optimization budget, following the same broad philosophy as autoresearch. In AutoVQE the budget is problem-dependent: each run gets `2^n_qubits` seconds, where `n_qubits` comes from `problem.json`. For example, a 5-qubit problem gets 32 seconds.
+By design, each VQE run uses a fixed wall-clock optimization budget, following the same broad philosophy as autoresearch. In AutoVQE the budget is problem-dependent: each run gets `2^(n_qubits-2)` seconds, where `n_qubits` comes from `problem.json`. For example, a 9-qubit problem gets 128 seconds.
 
 Each run uses the same fixed wall-clock optimization budget for a given problem instance. This keeps comparisons simple, fair, and iteration-friendly.
 
@@ -54,8 +54,7 @@ Do the setup first and then run the experiment loop continuously without stoppin
   2. If you already tried a different ansatz, try more complex ansatz (increase depth, add more parameters, etc).
   3. If you already tried a more complex ansatz, consider this is a best energy saturation and try to reduce the ansatz complexity (decrease depth, decrease two qubit gate count, decrease total gate count, remove parameters, randomly remove gates).
 - Do not ask me anything.
-- Do not give a final summary until you have completed at least 100 experiments and clearly exhausted both energy improvements and
-compression improvements.
+- Do not stop until you have 100 experiments logged in results.tsv, and you have clearly exhausted both energy improvements and compression improvements.
 
 If branch operations are blocked by the environment, continue the experiment loop and note the blocker once.
 ```
@@ -63,7 +62,7 @@ If branch operations are blocked by the environment, continue the experiment loo
 ## Design Principles
 
 - **Simplicity**: Simple is better. Especially in the quantum domain, complicated design is often not better. Keep the structure as simple as possible.
-- **Fixed time budget.** Experiments are compared under a fixed wall-clock budget of `2^n_qubits` seconds for the current problem, so ansatz and optimizer changes are judged fairly within the same time limit.
+- **Fixed time budget.** Experiments are compared under a fixed wall-clock budget of `2^(n_qubits-2)` seconds for the current problem, so ansatz and optimizer changes are judged fairly within the same time limit.
 - **Self-contained**: No complex config.
 
 # License

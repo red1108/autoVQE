@@ -1,16 +1,53 @@
 {
-  "name": "ising_1d_5q_open_chain",
+  "name": "ising_1d_9q_open_chain",
   "pauli_terms": [
-    { "pauli": "ZZIII", "coeff": 1.0 },
-    { "pauli": "IZZII", "coeff": 1.0 },
-    { "pauli": "IIZZI", "coeff": 1.0 },
-    { "pauli": "IIIZZ", "coeff": 1.0 },
+    { "pauli": "IIZIIZIII", "coeff": 0.2730891596470493 },
+    { "pauli": "IIYIIYIII", "coeff": 0.2730891596470493 },
+    { "pauli": "IIXIIXIII", "coeff": 0.2730891596470493 },
 
-    { "pauli": "XIIII", "coeff": 1.0 },
-    { "pauli": "IXIII", "coeff": 1.0 },
-    { "pauli": "IIXII", "coeff": 1.0 },
-    { "pauli": "IIIXI", "coeff": 1.0 },
-    { "pauli": "IIIIX", "coeff": 1.0 }
+    { "pauli": "IXIIXIIII", "coeff": 0.44013459956570355 },
+    { "pauli": "IYIIYIIII", "coeff": 0.44013459956570355 },
+    { "pauli": "IZIIZIIII", "coeff": 0.44013459956570355 },
+
+    { "pauli": "IIIIZZIII", "coeff": 0.6326939555812168 },
+    { "pauli": "IIIIYYIII", "coeff": 0.6326939555812168 },
+    { "pauli": "IIIIXXIII", "coeff": 0.6326939555812168 },
+
+    { "pauli": "IIIIIIZZI", "coeff": 0.6410385671303862 },
+    { "pauli": "IIIIIIYYI", "coeff": 0.6410385671303862 },
+    { "pauli": "IIIIIIXXI", "coeff": 0.6410385671303862 },
+
+    { "pauli": "IIIZIIZII", "coeff": 0.722112707928116 },
+    { "pauli": "IIIYIIYII", "coeff": 0.722112707928116 },
+    { "pauli": "IIIXIIXII", "coeff": 0.722112707928116 },
+
+    { "pauli": "IIIIIIIZZ", "coeff": 0.7328295061670302 },
+    { "pauli": "IIIIIIIYY", "coeff": 0.7328295061670302 },
+    { "pauli": "IIIIIIIXX", "coeff": 0.7328295061670302 },
+
+    { "pauli": "IIIIZZIII", "coeff": 0.7679600203032002 },
+    { "pauli": "IIIIYYIII", "coeff": 0.7679600203032002 },
+    { "pauli": "IIIIXXIII", "coeff": 0.7679600203032002 },
+
+    { "pauli": "ZIIZIIIII", "coeff": 1.399024099899152 },
+    { "pauli": "YIIYIIIII", "coeff": 1.399024099899152 },
+    { "pauli": "XIIXIIIII", "coeff": 1.399024099899152 },
+
+    { "pauli": "IIIZZIIII", "coeff": 1.479681980418874 },
+    { "pauli": "IIIYYIIII", "coeff": 1.479681980418874 },
+    { "pauli": "IIIXXIIII", "coeff": 1.479681980418874 },
+
+    { "pauli": "ZZIIIIIII", "coeff": 1.920034606671837 },
+    { "pauli": "YYIIIIIII", "coeff": 1.920034606671837 },
+    { "pauli": "XXIIIIIII", "coeff": 1.920034606671837 },
+
+    { "pauli": "IIZZIIIII", "coeff": 1.992911450178194 },
+    { "pauli": "IIYYIIIII", "coeff": 1.992911450178194 },
+    { "pauli": "IIXXIIIII", "coeff": 1.992911450178194 },
+
+    { "pauli": "IZZIIIIII", "coeff": 1.9997345852477584 },
+    { "pauli": "IYYIIIIII", "coeff": 1.9997345852477584 },
+    { "pauli": "IXXIIIIII", "coeff": 1.9997345852477584 }
   ],
   "basis_gates": [
     "rx",
@@ -19,12 +56,20 @@
     "cx"
   ],
   "coupling_map": [
-    [0,1],[1,0],
-    [1,2],[2,1],
-    [2,3],[3,2],
-    [3,4],[4,3]
+    [0, 1], [1, 0],
+    [0, 3], [3, 0],
+    [1, 2], [2, 1],
+    [1, 4], [4, 1],
+    [2, 5], [5, 2],
+    [3, 4], [4, 3],
+    [3, 6], [6, 3],
+    [4, 5], [5, 4],
+    [4, 7], [7, 4],
+    [5, 8], [8, 5],
+    [6, 7], [7, 6],
+    [7, 8], [8, 7]
   ],
   "initial_state_hint": [
-    0, 0, 0, 0, 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0
   ]
 }

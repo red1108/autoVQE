@@ -330,7 +330,7 @@ def bind_parameters(circuit: QuantumCircuit, parameters: ParameterVector, values
 def training_time_budget(problem: prepare.Problem, spec: ExperimentSpec) -> float:
     if spec.time_budget_seconds is not None:
         return float(spec.time_budget_seconds)
-    return float(2**problem.num_qubits)
+    return float(2 ** (problem.num_qubits - 2))
 
 
 def optimize_energy(

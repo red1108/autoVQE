@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ MAX_EVALS = 150
 SEED = 7
 EXACT_REFERENCE_MAX_QUBITS = 10
 DEFAULT_BASIS_GATES = ["rx", "ry", "rz", "cx"]
+DEFAULT_PROBLEM_PATH = Path("examples/h2_2q.json")
 TWO_QUBIT_GATES = {
     "cx",
     "cz",
@@ -48,11 +50,12 @@ class Problem:
     initial_state_hint: Any | None
 
 
-def load_problem(path: str | Path = "problem.json") -> Problem:
-    raw = json.loads(Path(path).read_text())
+def load_problem(path: str | Path = DEFAULT_PROBLEM_PATH) -> Problem:
+    path = Path(path)
+    raw = json.loads(path.read_text())
     pauli_terms = raw.get("pauli_terms")
     if not isinstance(pauli_terms, list) or not pauli_terms:
-        raise ValueError("problem.json must define a non-empty pauli_terms list")
+        raise ValueError(f"{path} must define a non-empty pauli_terms list")
 
     first_label = None
     op_terms: list[tuple[str, complex]] = []
@@ -222,7 +225,11 @@ def problem_summary(problem: Problem, backend_target: BackendTarget) -> str:
 
 
 def main() -> None:
-    problem = load_problem()
+    parser = argparse.ArgumentParser(description="Inspect an AutoVQE problem file")
+    parser.add_argument("problem", nargs="?", default=str(DEFAULT_PROBLEM_PATH))
+    args = parser.parse_args()
+
+    problem = load_problem(args.problem)
     backend_target = build_backend_target(problem)
     print(problem_summary(problem, backend_target))
 

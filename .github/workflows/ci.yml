@@ -16,4 +16,4 @@ jobs:
       - run: uv sync
       - run: uv run python -m py_compile harness.py train.py prepare.py
       - run: uv run harness.py check
-      - run: uv run harness.py solve problemset/problem1.json problemset/problem2.json problemset/problem3.json --rel-tol 0.001 --max-stages 1
+      - run: uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 1

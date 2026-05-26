@@ -9,7 +9,7 @@ The harness owns the research loop. `train.py` proposes and evaluates candidate 
 ## Files
 
 - `prepare.py` is the fixed evaluator. Do not edit it.
-- `problem.json` is the fixed problem instance. Do not edit it during a run.
+- The active problem file is fixed during a run. Do not edit it while measuring candidates.
 - `harness.py` is the research control tool. Use it to inspect the Hamiltonian, run controlled campaigns, summarize results, and recommend the next action.
 - `train.py` is the research surface. Modify ansatzes, optimizers, candidate schedules, and logging here.
 - `results.tsv` is the experiment ledger. It is ignored by git and should be append-only during a run.
@@ -17,7 +17,7 @@ The harness owns the research loop. `train.py` proposes and evaluates candidate 
 
 ## Setup
 
-1. Read `README.md`, `program.md`, `prepare.py`, `harness.py`, `train.py`, and `problem.json`.
+1. Read `README.md`, `program.md`, `prepare.py`, `harness.py`, `train.py`, and the active problem file.
 2. Check the worktree with `git status --short --branch`.
 3. Verify the environment:
 
@@ -152,8 +152,8 @@ Do not report smoke-test results as full-budget results. Mark them clearly in th
 When the user gives a concrete accuracy target, use `solve`, not a one-off benchmark:
 
 ```bash
-uv run harness.py solve problem.json --rel-tol 0.001
-uv run harness.py solve problemset/problem1.json problemset/problem2.json problemset/problem3.json --rel-tol 0.001
+uv run harness.py solve examples/h2_2q.json --rel-tol 0.001
+uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001
 ```
 
 `solve` runs an escalating loop:
@@ -213,7 +213,7 @@ Statuses:
 - Tying parameters is allowed when it reflects a real simplification, symmetry, or shared schedule.
 - Hardcoding learned angles is not allowed.
 - Do not modify `prepare.energy_from_circuit`.
-- Do not change `problem.json` during a run.
+- Do not change the active problem file during a run.
 - Prefer short, named functions over a pile of special cases.
 - Delete dead experiment branches in `train.py` once evidence shows they are not useful.
 - A pretty circuit that does not beat the ledger is not progress.

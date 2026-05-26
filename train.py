@@ -14,7 +14,8 @@ from scipy.optimize import minimize
 
 import prepare
 
-PROBLEM_PATH = Path(os.environ.get("AUTOVQE_PROBLEM_PATH", "problem.json"))
+DEFAULT_PROBLEM_PATH = "examples/h2_2q.json"
+PROBLEM_PATH = Path(os.environ.get("AUTOVQE_PROBLEM_PATH", DEFAULT_PROBLEM_PATH))
 RESULTS_PATH = Path(os.environ.get("AUTOVQE_RESULTS_PATH", "results.tsv"))
 MIN_EXPERIMENTS = int(os.environ.get("AUTOVQE_MIN_EXPERIMENTS", "100"))
 MAX_EXPERIMENTS = int(os.environ.get("AUTOVQE_MAX_EXPERIMENTS", "0"))

@@ -1,82 +1,67 @@
 # AutoVQE
 
-AutoVQE is a small, executable research loop for hardware-aware variational
-quantum eigensolver experiments. It is inspired by
-[autoresearch](https://github.com/karpathy/autoresearch): keep the code simple,
-make the objective measurable, and let experiments decide what to try next.
+AutoVQE is a small research harness for hardware-aware variational quantum
+eigensolver experiments. It keeps the evaluator fixed, measures every candidate
+against a reference energy when one is available, and escalates only when the
+current ansatz has not met the requested tolerance.
 
-The repository has three moving parts:
+The project is intentionally script-first:
 
-- `prepare.py` is the fixed evaluator. It loads a problem, builds the
-  Hamiltonian/backend target, transpiles circuits, and computes exact references
-  for small systems.
-- `train.py` is the research surface. Ansatz families, initial states,
-  optimizers, candidate schedules, and compression logic live here.
-- `harness.py` is the control loop. It audits Hamiltonians, runs isolated
-  campaigns, checks target tolerances, and escalates when a candidate has not
-  solved the problem.
-
-`program.md` is the agent protocol. It tells a coding agent how to run VQE
-research in this repo without silently changing the benchmark.
+- `harness.py` is the public CLI for inspection, benchmark runs, and target
+  solving.
+- `train.py` proposes and optimizes ansatz candidates.
+- `prepare.py` loads problem JSON files, builds Hamiltonians, computes exact
+  references for small systems, and reports compiled gate counts.
+- `examples/` contains named Hamiltonian fixtures.
+- `program.md` is the agent protocol for automated research runs.
 
 ## Quick Start
 
 ```bash
 uv sync
-uv run prepare.py
-uv run harness.py inspect
-uv run harness.py plan
 uv run harness.py check
-uv run train.py
+uv run harness.py solve --rel-tol 0.001
 ```
 
-For a target-driven run, use `solve`:
+The default solve target is `examples/h2_2q.json`, a fast sanity-check problem.
+To run the bundled small suite:
 
 ```bash
-uv run harness.py solve problem.json --rel-tol 0.001
+uv run harness.py solve \
+  examples/h2_2q.json \
+  examples/h2_4q.json \
+  examples/ising_1d_5q.json \
+  --rel-tol 0.001
 ```
 
-For the bundled example suite:
-
-```bash
-uv run harness.py solve problemset/problem1.json problemset/problem2.json problemset/problem3.json --rel-tol 0.001
-```
-
-`solve` is the preferred public entrypoint. It runs smoke, standard, and deep
-stages as needed, then prints whether the best energy satisfies:
+`solve` prints a target check using:
 
 ```text
 abs(best_energy - reference_energy) <= max(abs_tol, rel_tol * abs(reference_energy))
 ```
 
-## Common Commands
+## CLI
 
 ```bash
 # Inspect Hamiltonian structure and recommended ansatz families.
-uv run harness.py inspect
+uv run harness.py inspect --problem examples/ising_1d_5q.json
 
-# Print the agent runbook for the current problem.
+# Print a Hamiltonian-aware runbook for the default example.
 uv run harness.py plan
 
-# Run a bounded smoke campaign and summarize new rows.
-uv run harness.py campaign --mode smoke --experiments 8
+# Run isolated smoke campaigns over the small examples.
+uv run harness.py benchmark
 
-# Run the target-driven solver.
-uv run harness.py solve problem.json --rel-tol 0.001
-
-# Check all bundled problems in isolated result files.
-uv run harness.py benchmark --experiments 45 --experiment-seconds 2 --max-evals 300 --timeout 120
-
-# Run fast consistency checks.
-uv run harness.py check
+# Run the target-driven solver on a specific problem.
+uv run harness.py solve examples/ising_1d_5q.json --rel-tol 0.001
 ```
 
-Generated experiment files such as `results.tsv`, `run.log`, `benchmark_*`, and
-`solve_runs/` are ignored by git.
+Generated experiment files such as `results.tsv`, `run.log`,
+`benchmark_runs/`, and `solve_runs/` are ignored by git.
 
 ## Problem Format
 
-A problem is a JSON file with Pauli terms and optional backend constraints:
+Problems are JSON files with Pauli terms and optional hardware constraints:
 
 ```json
 {
@@ -92,41 +77,25 @@ A problem is a JSON file with Pauli terms and optional backend constraints:
 }
 ```
 
-For small problems, `prepare.py` computes `reference_energy` by exact
-diagonalization if the JSON does not provide one.
+If `reference_energy` is omitted and the system is small enough, AutoVQE uses
+exact diagonalization to compute it.
 
-## Research Discipline
+## Ansatz Families
 
-AutoVQE intentionally keeps the evaluator fixed and the research surface small.
+The harness classifies each Hamiltonian from its Pauli structure and chooses a
+candidate order before running experiments. Built-in families include Pauli
+Hamiltonian evolution, Heisenberg/exchange HVA, TFIM schedules, HF-hint
+two-state excitation mixers, and shallow hardware-efficient baselines.
 
-- Do not edit `prepare.py` during a run.
-- Do not edit the active `problem.json` during a run.
-- Every tunable rotation must be represented as an optimization parameter.
-- Problem-aware reference preparation is allowed only through explicit gates that
-  are counted in the compiled metrics.
-- Hardware-efficient ansatzes are useful baselines, not the first explanation for
-  every Hamiltonian.
-- A result is not solved until `harness.py solve` proves the requested tolerance.
-
-## Current Built-In Ansatz Families
-
-- Hamiltonian Pauli evolution (`pauli_hva`)
-- Heisenberg/exchange HVA (`heisenberg_hva`)
-- TFIM grouped and factorized schedules (`tfim_shared`, `tfim_factorized`)
-- HF-hint two-state excitation mixers (`two_state_excitation`)
-- Hardware-efficient and real-amplitudes style baselines (`hea`, `brick`, `symm`)
-
-The harness chooses an initial family order from the Pauli structure, then
-measures actual performance.
+Hardware-efficient ansatzes are treated as baselines, not as the default
+scientific explanation for every Hamiltonian.
 
 ## Development Checks
-
-Before pushing changes:
 
 ```bash
 uv run python -m py_compile harness.py train.py prepare.py
 uv run harness.py check
-uv run harness.py solve problemset/problem1.json problemset/problem2.json problemset/problem3.json --rel-tol 0.001
+uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001
 git diff --check
 ```
 

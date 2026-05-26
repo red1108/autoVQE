@@ -19,6 +19,13 @@ RESULTS_PATH = Path("results.tsv")
 RUN_LOG_PATH = Path("run.log")
 BENCHMARK_DIR = Path("benchmark_runs")
 SOLVE_DIR = Path("solve_runs")
+DEFAULT_PROBLEM = Path("examples/h2_2q.json")
+DEFAULT_BENCHMARK_PROBLEMS = (
+    Path("examples/h2_2q.json"),
+    Path("examples/h2_4q.json"),
+    Path("examples/ising_1d_5q.json"),
+)
+LARGE_EXAMPLE_PROBLEMS = (Path("examples/ising_1d_9q.json"),)
 
 
 @dataclass(frozen=True)
@@ -359,7 +366,7 @@ def candidate_policy(model_class: str, bipartite: bool | None) -> list[AnsatzCan
     ]
 
 
-def analyze_problem(path: str | Path = "problem.json") -> HamiltonianProfile:
+def analyze_problem(path: str | Path = DEFAULT_PROBLEM) -> HamiltonianProfile:
     problem = prepare.load_problem(path)
     backend_target = prepare.build_backend_target(problem)
     terms = simplified_terms(problem)
@@ -730,7 +737,7 @@ def run_self_check(with_smoke: bool = False) -> int:
         expected_family = spec.family
 
     circuit, params = train.build_ansatz(problem, spec)
-    bound = circuit.assign_parameters({param: 0.0 for param in params}, inplace=False)
+    bound = circuit.assign_parameters({param: 0.123 for param in params}, inplace=False)
     _, metrics = prepare.transpile_and_report(bound, backend)
     check(len(params) > 0, f"{expected_family} exposes tunable parameters")
     check(metrics["total_gate_count"] > 0, f"{expected_family} transpiles to counted gates")
@@ -889,10 +896,10 @@ def benchmark_problem(
     )
 
 
-def default_benchmark_problems(include_current: bool) -> list[Path]:
-    paths = sorted(Path("problemset").glob("*.json"))
-    if include_current:
-        paths.insert(0, Path("problem.json"))
+def default_benchmark_problems(include_large: bool) -> list[Path]:
+    paths = list(DEFAULT_BENCHMARK_PROBLEMS)
+    if include_large:
+        paths.extend(LARGE_EXAMPLE_PROBLEMS)
     return paths
 
 
@@ -919,7 +926,7 @@ def print_benchmark_summary(summaries: list[BenchmarkSummary]) -> None:
 def run_benchmark(args: argparse.Namespace) -> int:
     problem_paths = [Path(path) for path in args.problems]
     if not problem_paths:
-        problem_paths = default_benchmark_problems(include_current=args.include_current)
+        problem_paths = default_benchmark_problems(include_large=args.include_large)
     if not problem_paths:
         raise RuntimeError("no benchmark problems found")
 
@@ -1066,7 +1073,7 @@ def solve_problem(
 
 
 def run_solve(args: argparse.Namespace) -> int:
-    problem_paths = [Path(path) for path in args.problems] or [Path("problem.json")]
+    problem_paths = [Path(path) for path in args.problems] or [DEFAULT_PROBLEM]
     summaries = [
         solve_problem(
             problem_path,
@@ -1105,14 +1112,14 @@ def run_solve(args: argparse.Namespace) -> int:
 
 def print_runbook(profile: HamiltonianProfile) -> None:
     print("runbook:")
-    print("1. Run `uv run harness.py solve problem.json --rel-tol <target>` when the target is known.")
+    print("1. Run `uv run harness.py solve <problem-file> --rel-tol <target>` when the target is known.")
     print("2. If solve fails, inspect the failed stage logs and add the missing Hamiltonian-derived candidate in train.py.")
     print("3. Keep every tunable rotation as an explicit parameter and count all reference-prep gates.")
     print("4. Re-run solve; only report success when target_status says passed=True.")
     print("5. After target is reached, optionally use `--extra-compress` to search for simpler tied circuits.")
     print()
     print("suggested solve command:")
-    print("uv run harness.py solve problem.json --rel-tol 0.001")
+    print(f"uv run harness.py solve {DEFAULT_PROBLEM} --rel-tol 0.001")
     print()
     print("manual smoke command:")
     print(
@@ -1128,8 +1135,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="AutoVQE research harness")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    inspect_parser = subparsers.add_parser("inspect", help="analyze problem.json")
-    inspect_parser.add_argument("--problem", default="problem.json")
+    inspect_parser = subparsers.add_parser("inspect", help="analyze a problem JSON file")
+    inspect_parser.add_argument("--problem", default=str(DEFAULT_PROBLEM))
     inspect_parser.add_argument("--json", action="store_true")
 
     subparsers.add_parser("plan", help="print Hamiltonian-aware experiment runbook")
@@ -1152,8 +1159,8 @@ def main() -> int:
     campaign_parser.add_argument("--dry-run", action="store_true")
 
     benchmark_parser = subparsers.add_parser("benchmark", help="run isolated campaigns over multiple problem files")
-    benchmark_parser.add_argument("problems", nargs="*", help="problem JSON files; defaults to problemset/*.json")
-    benchmark_parser.add_argument("--include-current", action="store_true", help="also include problem.json before problemset files")
+    benchmark_parser.add_argument("problems", nargs="*", help="problem JSON files; defaults to the small examples")
+    benchmark_parser.add_argument("--include-large", action="store_true", help="also include the slower 9-qubit example")
     benchmark_parser.add_argument("--mode", choices=["smoke", "full"], default="smoke")
     benchmark_parser.add_argument("--experiments", type=int, default=8)
     benchmark_parser.add_argument("--experiment-seconds", type=float, default=0.5)
@@ -1162,7 +1169,7 @@ def main() -> int:
     benchmark_parser.add_argument("--output-dir", default=str(BENCHMARK_DIR))
 
     solve_parser = subparsers.add_parser("solve", help="run an escalating target-driven solve loop")
-    solve_parser.add_argument("problems", nargs="*", help="problem JSON files; defaults to problem.json")
+    solve_parser.add_argument("problems", nargs="*", help=f"problem JSON files; defaults to {DEFAULT_PROBLEM}")
     solve_parser.add_argument("--rel-tol", type=float, default=1e-3, help="relative energy tolerance versus reference")
     solve_parser.add_argument("--abs-tol", type=float, default=0.0, help="absolute energy tolerance floor")
     solve_parser.add_argument("--max-stages", type=int, default=3, help="number of solve stages to try")

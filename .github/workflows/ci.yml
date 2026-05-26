@@ -1,0 +1,19 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: uv sync
+      - run: uv run python -m py_compile harness.py train.py prepare.py
+      - run: uv run harness.py check
+      - run: uv run harness.py solve problemset/problem1.json problemset/problem2.json problemset/problem3.json --rel-tol 0.001 --max-stages 1

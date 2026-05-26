@@ -1,70 +1,135 @@
 # AutoVQE
 
-Inspired by [autoresearch](https://github.com/karpathy/autoresearch), AutoVQE is a automated optimization framework for variational quantum algorithms, focused on hardware-aware VQE. The goal is to provide a simple, reproducible, and extensible setup for systematically exploring ansatz design, optimization strategies, and hardware constraints in VQE research. The emphasis is on a minimal, single-file research script (`train.py`) that can be easily edited and iterated on, while keeping the rest of the repo fixed to ensure consistency and comparability across experiments.
+AutoVQE is a small, executable research loop for hardware-aware variational
+quantum eigensolver experiments. It is inspired by
+[autoresearch](https://github.com/karpathy/autoresearch): keep the code simple,
+make the objective measurable, and let experiments decide what to try next.
 
-The repo is built around one fixed harness in `prepare.py`, one editable research script in `train.py`, one problem file in `problem.json`, and as little extra structure as possible.
+The repository has three moving parts:
 
-# How it works
+- `prepare.py` is the fixed evaluator. It loads a problem, builds the
+  Hamiltonian/backend target, transpiles circuits, and computes exact references
+  for small systems.
+- `train.py` is the research surface. Ansatz families, initial states,
+  optimizers, candidate schedules, and compression logic live here.
+- `harness.py` is the control loop. It audits Hamiltonians, runs isolated
+  campaigns, checks target tolerances, and escalates when a candidate has not
+  solved the problem.
 
-Following the philosophy of [autoresearch](https://github.com/karpathy/autoresearch), AutoVQE is built around a very small and iterative workflow.
+`program.md` is the agent protocol. It tells a coding agent how to run VQE
+research in this repo without silently changing the benchmark.
 
-- `prepare.py` is the fixed harness. It loads and validates the problem from `problem.json`, constructs the Hamiltonian and backend target, computes any reference values if available, and provides shared evaluation and reporting utilities. This file is not part of the research surface.
-- `train.py` is the main research script. This is where you implement and modify the VQE ansatz, initialization, optimization loop, and final summary output. You are encouraged to experiment here freely with different ansatz families, optimizers, and search strategies.
-- `results.tsv` is a lightweight experiment log. After each run, append one row with the commit hash, final energy, single-qubit gate count, two-qubit gate count, total gate count, parameter count, run status, and a short description of the change.
-
-By design, each VQE run uses a fixed wall-clock optimization budget, following the same broad philosophy as autoresearch. In AutoVQE the budget is problem-dependent: each run gets `2^(n_qubits-2)` seconds, where `n_qubits` comes from `problem.json`. For example, a 9-qubit problem gets 128 seconds.
-
-Each run uses the same fixed wall-clock optimization budget for a given problem instance. This keeps comparisons simple, fair, and iteration-friendly.
-
-## Project Structure
-
-```
-prepare.py      — constants, problem prep, transpile + evaluation utilities (do not modify)
-train.py        — ansatz, optimizer, and VQE loop (agent modifies this)
-program.md      — agent instructions
-problem.json    — fixed Hamiltonian
-results.tsv     — experiment log
-pyproject.toml  — dependencies
-```
-
-## Quick Start (Single baseline run)
+## Quick Start
 
 ```bash
 uv sync
 uv run prepare.py
+uv run harness.py inspect
+uv run harness.py plan
+uv run harness.py check
 uv run train.py
 ```
 
-The expected baseline output from `train.py` is a plain summary block with one metric per line, so simple commands such as `uv run train.py | grep '^energy:'` stay usable.
+For a target-driven run, use `solve`:
 
-
-## Running the agent
-
-Simply spin up your Claude/Codex or whatever you want in this repo (and disable all permissions), then you can prompt something like:
-
-### For codex
 ```bash
-Hi have a look at program.md and kick off a new experiment.
-
-Do the setup first and then run the experiment loop continuously without stopping early.
-
-- Append every run to results.tsv.
-- Never stop even if your best energy is saturated. There are two options:
-  1. If you didn't try a different ansatz, try a different ansatz.
-  2. If you already tried a different ansatz, try more complex ansatz (increase depth, add more parameters, etc).
-  3. If you already tried a more complex ansatz, consider this is a best energy saturation and try to reduce the ansatz complexity (decrease depth, decrease two qubit gate count, decrease total gate count, remove parameters, randomly remove gates).
-- Do not ask me anything.
-- Do not stop until you have 100 experiments logged in results.tsv, and you have clearly exhausted both energy improvements and compression improvements.
-
-If branch operations are blocked by the environment, continue the experiment loop and note the blocker once.
+uv run harness.py solve problem.json --rel-tol 0.001
 ```
 
-## Design Principles
+For the bundled example suite:
 
-- **Simplicity**: Simple is better. Especially in the quantum domain, complicated design is often not better. Keep the structure as simple as possible.
-- **Fixed time budget.** Experiments are compared under a fixed wall-clock budget of `2^(n_qubits-2)` seconds for the current problem, so ansatz and optimizer changes are judged fairly within the same time limit.
-- **Self-contained**: No complex config.
+```bash
+uv run harness.py solve problemset/problem1.json problemset/problem2.json problemset/problem3.json --rel-tol 0.001
+```
 
-# License
+`solve` is the preferred public entrypoint. It runs smoke, standard, and deep
+stages as needed, then prints whether the best energy satisfies:
 
-MIT
+```text
+abs(best_energy - reference_energy) <= max(abs_tol, rel_tol * abs(reference_energy))
+```
+
+## Common Commands
+
+```bash
+# Inspect Hamiltonian structure and recommended ansatz families.
+uv run harness.py inspect
+
+# Print the agent runbook for the current problem.
+uv run harness.py plan
+
+# Run a bounded smoke campaign and summarize new rows.
+uv run harness.py campaign --mode smoke --experiments 8
+
+# Run the target-driven solver.
+uv run harness.py solve problem.json --rel-tol 0.001
+
+# Check all bundled problems in isolated result files.
+uv run harness.py benchmark --experiments 45 --experiment-seconds 2 --max-evals 300 --timeout 120
+
+# Run fast consistency checks.
+uv run harness.py check
+```
+
+Generated experiment files such as `results.tsv`, `run.log`, `benchmark_*`, and
+`solve_runs/` are ignored by git.
+
+## Problem Format
+
+A problem is a JSON file with Pauli terms and optional backend constraints:
+
+```json
+{
+  "name": "example",
+  "pauli_terms": [
+    { "pauli": "ZI", "coeff": -1.0 },
+    { "pauli": "IZ", "coeff": -1.0 },
+    { "pauli": "XX", "coeff": 0.2 }
+  ],
+  "basis_gates": ["rx", "ry", "rz", "cx"],
+  "coupling_map": [[0, 1], [1, 0]],
+  "initial_state_hint": [1, 0]
+}
+```
+
+For small problems, `prepare.py` computes `reference_energy` by exact
+diagonalization if the JSON does not provide one.
+
+## Research Discipline
+
+AutoVQE intentionally keeps the evaluator fixed and the research surface small.
+
+- Do not edit `prepare.py` during a run.
+- Do not edit the active `problem.json` during a run.
+- Every tunable rotation must be represented as an optimization parameter.
+- Problem-aware reference preparation is allowed only through explicit gates that
+  are counted in the compiled metrics.
+- Hardware-efficient ansatzes are useful baselines, not the first explanation for
+  every Hamiltonian.
+- A result is not solved until `harness.py solve` proves the requested tolerance.
+
+## Current Built-In Ansatz Families
+
+- Hamiltonian Pauli evolution (`pauli_hva`)
+- Heisenberg/exchange HVA (`heisenberg_hva`)
+- TFIM grouped and factorized schedules (`tfim_shared`, `tfim_factorized`)
+- HF-hint two-state excitation mixers (`two_state_excitation`)
+- Hardware-efficient and real-amplitudes style baselines (`hea`, `brick`, `symm`)
+
+The harness chooses an initial family order from the Pauli structure, then
+measures actual performance.
+
+## Development Checks
+
+Before pushing changes:
+
+```bash
+uv run python -m py_compile harness.py train.py prepare.py
+uv run harness.py check
+uv run harness.py solve problemset/problem1.json problemset/problem2.json problemset/problem3.json --rel-tol 0.001
+git diff --check
+```
+
+## License
+
+MIT. See [LICENSE](LICENSE).

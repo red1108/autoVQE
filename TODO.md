@@ -1,21 +1,19 @@
-# TODO
+# Roadmap
 
-This file is intentionally short and execution-oriented.
+Keep this list short. AutoVQE should stay a small executable research loop, not a
+framework.
 
-## Phase 4 — keep it small
-- [ ] Remove dead code, unused options, and “future-proof” abstractions.
-- [ ] Confirm that experiment agents only need to touch `train.py`.
-- [ ] Keep the number of top-level files that matter small and obvious.
-- [ ] Prefer deletion over extension when the behavior is unchanged.
+## Near Term
 
-## Later, not now
-- [ ] problem.json에서 connectivity까지 제어
-- [ ] FCIDump import
-- [ ] QCSchema import
-- [ ] PennyLane adapters
-- [ ] OpenFermion adapters
-- [ ] adaptive ansatz families
-- [ ] measurement grouping
-- [ ] noise-model and fake-backend ladders
-- [ ] real hardware runtime path
-- [ ] multi-problem benchmark suites
+- Add more small public problem fixtures with known references.
+- Track target-solve summaries in a compact machine-readable file.
+
+## Later
+
+- FCIDump import.
+- QCSchema import.
+- OpenFermion or PennyLane adapter scripts.
+- Adaptive operator-pool growth beyond the current built-in candidate schedule.
+- Measurement grouping and shot-noise aware evaluation.
+- Noise-model and fake-backend ladders.
+- Real hardware runtime path.

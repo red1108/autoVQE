@@ -1,64 +1,181 @@
-# AutoVQE
+# AutoVQE Agent Protocol
 
-This is an experiment to have the LLM do its own VQE research.
+This repo is an experiment in letting an agent do disciplined VQE research. The agent should not guess an ansatz from the problem name. It must inspect the Hamiltonian, choose ansatz families that match the Hamiltonian structure, run controlled experiments, analyze the results, and then improve or compress the circuit.
+
+The style should stay small and direct. Prefer one clear script and measurable experiments over a framework.
+
+The harness owns the research loop. `train.py` proposes and evaluates candidate circuits; `harness.py` decides whether the evidence is good enough, whether to escalate, and whether the target has actually been met. Do not report success from a best-looking row until the harness has compared it against the requested tolerance.
+
+## Files
+
+- `prepare.py` is the fixed evaluator. Do not edit it.
+- `problem.json` is the fixed problem instance. Do not edit it during a run.
+- `harness.py` is the research control tool. Use it to inspect the Hamiltonian, run controlled campaigns, summarize results, and recommend the next action.
+- `train.py` is the research surface. Modify ansatzes, optimizers, candidate schedules, and logging here.
+- `results.tsv` is the experiment ledger. It is ignored by git and should be append-only during a run.
+- `run.log` is the latest captured training log.
 
 ## Setup
 
-To set up a new experiment, work with the user to:
-
-1. **Agree on a run tag**: propose a tag based on today's date, for example `mar19`. The branch `autovqe/<tag>` must not already exist.
-2. **Create the branch**: `git checkout -b autovqe/<tag>` from the current main branch.
-3. **Read the in-scope files**: The repo is intentionally small. Read these files for full context:
-   - `README.md` — repository context.
-   - `prepare.py` — fixed constants, problem loading, validation, exact reference computation, transpilation, and evaluation helpers. Do not modify.
-   - `train.py` — the file you modify. Ansatz, initialization, optimizer, and VQE loop.
-   - `problem.json` — the fixed Hamiltonian and backend description for this run.
-4. **Verify the environment**: If the environment is not ready, tell the human to run `uv sync`. If the problem needs validation, tell the human to run `uv run prepare.py`.
-5. **Initialize results.tsv**: Create `results.tsv` with just the header row if it does not already exist. The baseline will be recorded after the first run.
-6. **Confirm and go**: Confirm setup looks good.
-
-Once you get confirmation, kick off the experimentation.
-
-## Experimentation
-
-Each experiment is evaluated on the single fixed Hamiltonian in `problem.json`.
-
-Each experiment runs under a fixed wall-clock optimization budget of `2^(n_qubits-2)` seconds, where `n_qubits` is defined by `problem.json`. For example, a 9-qubit problem gets 128 seconds. This fixed budget is part of the experimental design, so candidates should be compared under the same time limit.
-
-You launch the baseline simply as:
+1. Read `README.md`, `program.md`, `prepare.py`, `harness.py`, `train.py`, and `problem.json`.
+2. Check the worktree with `git status --short --branch`.
+3. Verify the environment:
 
 ```bash
-uv run train.py
+uv run prepare.py
+uv run harness.py inspect
+uv run harness.py campaign --mode smoke --dry-run
+uv run harness.py check
+uv run harness.py results
 ```
 
-**What you CAN do:**
-- Modify `train.py` — this is the only file you edit during autonomous research. Everything inside that file is fair game: ansatz, optimizer, parameterization, restart strategy, training loop, and other VQE choices.
+4. If starting a new branch is possible, create `autovqe/<tag>` from the current base branch. If branch operations are blocked, continue and mention the blocker once.
+5. Do not ask for confirmation once the user has asked the experiment loop to begin.
 
-**What you CANNOT do:**
-- Modify `prepare.py`. It is read-only. It contains the fixed harness and evaluation helpers.
-- Modify `problem.json`. The problem is fixed during a run.
-- Install new packages or add dependencies. You can only use what is already in `pyproject.toml`.
-- Break the plain summary output format in a way that makes simple parsing harder.
-- Modify the evaluation harness. the `energy_from_circuit` function is the only way to get energy estimates, and it must not be modified.
-- Do not change fixed time budget. Each run must be compared under the same time limit.
-- Modify the initial state preparation. The initial state is fixed to be the all-zeros state, and you cannot modify that.
-- Do not cheat by hardcoding rotation angles or other variational degrees of freedom. Every tunable rotation gate in the ansatz must be represented as an explicit optimization parameter and counted in `num_params`. You may reduce the number of parameters only by legitimately simplifying the ansatz structure, tying parameters together intentionally, or removing gates entirely — not by freezing previously tuned values into constants and claiming the circuit is parameter-free.
+## Hamiltonian Audit First
 
-**The goal is simple: get the lowest energy.**
+Before changing `train.py`, run:
 
-**Simplicity criterion**: All else being equal, simpler is better. A tiny energy improvement that adds ugly complexity is usually not worth it. A tiny energy improvement from reducing the number of gates is a great improvement — that's a simplification win. When evaluating whether to keep a change, weigh the gate count against the improvement magnitude. A 1% energy improvement that doubles the parameter or gate count is probably not worth it. A 1% energy improvement from reduces the parameter/gate count? Definitely keep. An improvement of ~0 but much simpler structure? Keep. Notably, reducing the two-qubit gate count is a bigger simplification win than reducing the single-qubit gate count.
+```bash
+uv run harness.py inspect
+uv run harness.py plan
+```
 
-Once a run reaches the reference energy, or is effectively tied with the current best energy, do not stop. Continue searching for a simpler solution that preserves the same or nearly the same energy while reducing, in order of priority: `twoq_count`, `total_gate_count`, `depth` and `num_params`. Only stop this compression phase when repeated experiments fail to find a candidate that matches or improves the current energy while improving one or more of those four metrics.
+Use the reported `model_class`, support graph, locality counts, Pauli pattern, and recommendations as the starting point. The Hamiltonian name is weak evidence. The Pauli structure is authoritative.
 
-**The first run**: Your very first run should always establish the baseline, so run the training script as is.
+The audit should answer:
+
+- Is the Hamiltonian Z-diagonal, TFIM-like, XX/XY/XXZ/Heisenberg-like, chemistry-like, or general Pauli?
+- Is the support graph sparse, bipartite, or hardware-aligned?
+- Are coefficients tied across `XX`, `YY`, and `ZZ` on the same support?
+- Are there obvious conserved sectors such as parity, excitation number, magnetization, or spin-like symmetry?
+- Which ansatz family should be tried first, and which family should only be used as a baseline?
+
+## Ansatz Selection Policy
+
+Use this decision table unless the audit or experiment evidence contradicts it.
+
+| Hamiltonian class | First candidates | Baseline/fallback |
+| --- | --- | --- |
+| Z-only / QUBO / classical Ising | QAOA-style cost evolution plus mixer, commuting Z group phase layers | shallow HEA |
+| TFIM-like `ZZ + X` | grouped TFIM HVA, QAOA-like cost/mixer | shallow HEA |
+| `XX + YY` spin graph | exchange/XY layers, magnetization-preserving pools, qubit-ADAPT edge pool | shallow HEA |
+| matched `XX + YY + ZZ` graph | Heisenberg/exchange HVA, edge-color HVA, Neel/reference-prep variants if graph supports it | shallow HEA |
+| fermionic chemistry with metadata | HF reference, UCC/UpCCGSD, excitation-preserving or ADAPT-style pools | commuting-group HVA |
+| general Pauli | commuting-group HVA, Hamiltonian Pauli pool, qubit-ADAPT-style growth | shallow HEA |
+
+Generic hardware-efficient ansatz is a control, not a scientific explanation. Do not let a deep generic HEA be the only path explored before Hamiltonian-derived candidates have been tested.
+
+Concrete audit rules:
+
+- For TFIM-like `ZZ + X`, inspect the sign of the X-field. A positive `+X` field has `|->` as the field-ground reference; a negative `-X` field has `|+>`. Count that preparation with explicit gates.
+- For chemistry-like Hamiltonians with `initial_state_hint`, treat the hint as a Hartree-Fock-style reference only if it is prepared with explicit `x` gates. Then inspect X/Y Pauli supports to propose excitation or UCC-like mixers before a generic HEA.
+- For Pauli-evolution ansatzes, remember that Qiskit Pauli labels are big-endian: the rightmost label character acts on qubit 0. Ansatz builders and Hamiltonian audits must use the same convention.
+- If a Hamiltonian-derived ansatz stalls above the target tolerance, try a shallow real-amplitudes/HEA baseline as a diagnostic, then return to the structured family or add a targeted operator-pool candidate.
+
+## Initial State Rule
+
+The underlying device state starts from all zeros. Problem-aware reference preparation is allowed only if it is implemented as explicit gates inside `train.py`, counted in the compiled gate metrics, and described in `results.tsv`.
+
+Do not hide a tuned state in constants or uncounted initialization.
+
+## Experiment Loop
+
+For each research cycle:
+
+1. Inspect the Hamiltonian with `harness.py`.
+2. Pick one ansatz idea tied to the audit evidence.
+3. Modify only `train.py` unless the requested task is to improve the harness or protocol.
+4. Run a smoke tournament for candidate families before committing to a full run:
+
+```bash
+AUTOVQE_MAX_EXPERIMENTS=6 AUTOVQE_EXPERIMENT_SECONDS=2 AUTOVQE_MAX_EVALS=40 uv run harness.py run --timeout 90
+uv run harness.py results
+```
+
+The cleaner default is:
+
+```bash
+uv run harness.py campaign --mode smoke --experiments 6 --experiment-seconds 2 --max-evals 40 --timeout 90
+```
+
+5. Promote promising candidates to normal comparison using the fixed per-experiment budget.
+6. Append every run to `results.tsv`.
+7. Keep changes that improve energy. If energy is effectively tied, keep only if the circuit improves in this priority order:
+   `twoq_count`, `total_gate_count`, `depth`, `num_params`.
+8. If energy saturates, stay inside the best Hamiltonian-derived family and compress before returning to broader search.
+9. If all structured candidates fail, broaden the operator pool before trying a deeper generic ansatz.
+
+## Time Control
+
+Full comparisons use the fixed per-experiment budget:
+
+```text
+2^(n_qubits - 2) seconds
+```
+
+The wrapper timeout should cover the whole run:
+
+```bash
+uv run harness.py run --timeout <seconds>
+```
+
+For campaign-style runs, prefer:
+
+```bash
+uv run harness.py campaign --mode smoke --experiments 8
+uv run harness.py campaign --mode full --experiments 12
+```
+
+To check whether the harness works across the bundled example Hamiltonians, run:
+
+```bash
+uv run harness.py benchmark --experiments 45 --experiment-seconds 2 --max-evals 300 --timeout 120
+```
+
+The following environment variables are allowed for smoke tests and development only:
+
+- `AUTOVQE_MAX_EXPERIMENTS`: stop `train.py` after this many experiments.
+- `AUTOVQE_EXPERIMENT_SECONDS`: override per-experiment optimization seconds.
+- `AUTOVQE_MAX_EVALS`: override objective evaluations per experiment.
+- `AUTOVQE_MIN_EXPERIMENTS`: override the minimum run count for a controlled campaign.
+- `AUTOVQE_EXHAUSTION_PATIENCE`: override stagnation patience.
+- `AUTOVQE_TARGET_REL_ERROR`: target relative error versus `reference_energy`.
+- `AUTOVQE_TARGET_ABS_ERROR`: target absolute error floor.
+- `AUTOVQE_STOP_AT_TARGET`: stop a training stage once the target is met.
+- `AUTOVQE_TARGET_EXTRA_COMPRESS`: optional extra experiments after target hit for compression.
+
+Do not report smoke-test results as full-budget results. Mark them clearly in the description if they are logged.
+
+## Solve Mode
+
+When the user gives a concrete accuracy target, use `solve`, not a one-off benchmark:
+
+```bash
+uv run harness.py solve problem.json --rel-tol 0.001
+uv run harness.py solve problemset/problem1.json problemset/problem2.json problemset/problem3.json --rel-tol 0.001
+```
+
+`solve` runs an escalating loop:
+
+1. Audit the Hamiltonian and choose the model class from Pauli structure.
+2. Run a smoke stage with isolated results/log files.
+3. Compute `abs(best_energy - reference_energy)` and compare it with `max(abs_tol, rel_tol * abs(reference_energy))`.
+4. Stop immediately if the target is proved.
+5. If not proved, escalate to standard and then deep stages with larger experiment/evaluation budgets.
+6. Return nonzero if no stage proves the target or if no reference is available.
+
+This is the Karpathy-style version of the loop: keep the system small, make the objective executable, print the evidence, and let the next action be determined by measured failure instead of by narration.
 
 ## Output Format
 
-Once the script finishes it prints a summary like this:
+`train.py` should end with a parseable summary block:
 
 ```text
 ---
 energy:           -1.234567
+reference_energy: -1.300000
+overlap:          0.900000
 singleq_count:    40
 twoq_count:       24
 total_gate_count: 64
@@ -68,57 +185,35 @@ eval_calls:       143
 total_seconds:    21.4
 ```
 
-If a metric is unavailable, omit the line instead of inventing placeholders.
+If a metric is unavailable, omit the line.
 
-## Logging Results
+## Result Ledger
 
-When an experiment is done, log it to `results.tsv` as tab-separated values, not comma-separated values.
-
-The TSV has a header row and 8 columns:
+`results.tsv` has exactly these columns:
 
 ```text
 commit	energy	singleq_count	twoq_count	total_gate_count	num_params	status	description
 ```
 
-1. git commit hash (short, 7 chars)
-2. best energy achieved, for example `-1.234567`
-3. compiled single-qubit gate count
-4. compiled two-qubit gate count
-5. compiled total gate count
-6. VQE parameter count
-7. status: `keep`, `discard`, or `crash`
-8. short text description of what the experiment tried
-
-Example:
+`description` must include the ansatz family and the Hamiltonian reason, not just hyperparameters. For example:
 
 ```text
-commit	energy	singleq_count	twoq_count	total_gate_count	num_params	status	description
-a1b2c3d	-1.857275	8	2	10	8	keep	baseline hea layers=2
-b2c3d4e	-1.857100	12	2	14	12	discard	deeper hea with same optimizer
-c3d4e5f	0.000000	0	0	0	0	crash	broken parameter binding
+heisenberg_hva layers=2 shared edge-color | reason=matched XX/YY/ZZ supports
 ```
 
-## The Experiment Loop
+Statuses:
 
-The experiment runs on a dedicated branch such as `autovqe/mar19`.
+- `keep`: improved energy, or near-tied energy with a simpler circuit.
+- `discard`: completed but did not beat the incumbent.
+- `crash`: implementation or idea failed.
 
-LOOP FOREVER:
+## Research Discipline
 
-1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with one experimental idea by directly hacking the file.
-3. git commit.
-4. Run the experiment:
-   `uv run train.py > run.log 2>&1`
-5. Read the key results:
-   `grep "^energy:\|^singleq_count:\|^twoq_count:\|^total_gate_count:\|^num_params:" run.log`
-6. If the grep output is empty, the run crashed. Read the traceback with `tail -n 50 run.log` and decide whether to fix and retry or log a crash and move on.
-7. Record the result in `results.tsv`. Leave `results.tsv` untracked by git.
-8. If energy improved, keep the commit and advance the branch.
-9. If energy is equal or worse, reset back to where you started unless the code became clearly simpler at no performance cost.
-10. If energy is equal or nearly equal to the best known result, switch into compression mode and keep pushing for fewer parameters, fewer two-qubit gates, fewer total gates, and lower depth before considering the search exhausted.
-
-**Timeout**: If you are using a fixed time budget for comparison, enforce the same budget for every candidate and kill obviously hung runs.
-
-**Crashes**: If a run crashes because of a small implementation mistake, fix it and retry. If the idea itself is broken, log `crash` in the TSV and move on.
-
-**Never stop**: Once the experiment loop begins, do not pause to ask whether you should continue unless the human explicitly interrupts or changes the plan.
+- Every tunable rotation must be represented by an explicit optimization parameter and counted in `num_params`.
+- Tying parameters is allowed when it reflects a real simplification, symmetry, or shared schedule.
+- Hardcoding learned angles is not allowed.
+- Do not modify `prepare.energy_from_circuit`.
+- Do not change `problem.json` during a run.
+- Prefer short, named functions over a pile of special cases.
+- Delete dead experiment branches in `train.py` once evidence shows they are not useful.
+- A pretty circuit that does not beat the ledger is not progress.

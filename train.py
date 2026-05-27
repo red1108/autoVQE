@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 from qiskit.circuit import ParameterVector, QuantumCircuit
+from qiskit.quantum_info import Statevector
 from scipy.optimize import differential_evolution, minimize
 
 import prepare
@@ -28,6 +29,11 @@ TARGET_REL_ERROR = float(os.environ.get("AUTOVQE_TARGET_REL_ERROR", "0") or "0")
 TARGET_ABS_ERROR = float(os.environ.get("AUTOVQE_TARGET_ABS_ERROR", "0") or "0")
 STOP_AT_TARGET = os.environ.get("AUTOVQE_STOP_AT_TARGET", "0") == "1"
 TARGET_EXTRA_COMPRESS = int(os.environ.get("AUTOVQE_TARGET_EXTRA_COMPRESS", "0"))
+SUBSPACE_REFINEMENT = os.environ.get("AUTOVQE_SUBSPACE_REFINEMENT", "auto")
+SUBSPACE_TRIGGER_MULTIPLE = float(os.environ.get("AUTOVQE_SUBSPACE_TRIGGER_MULTIPLE", "50"))
+SUBSPACE_TRIGGER_ABS = float(os.environ.get("AUTOVQE_SUBSPACE_TRIGGER_ABS", "0.5"))
+SUBSPACE_TOP_STATES = int(os.environ.get("AUTOVQE_SUBSPACE_TOP_STATES", "160"))
+SUBSPACE_EXPANSION_STEPS = int(os.environ.get("AUTOVQE_SUBSPACE_EXPANSION_STEPS", "2"))
 
 
 @dataclass(frozen=True)
@@ -976,6 +982,77 @@ def meets_target(result: ExperimentResult, reference_energy: float | None) -> bo
     return abs(result.energy - float(reference_energy)) <= threshold
 
 
+def pauli_flip_masks(problem: prepare.Problem) -> list[int]:
+    masks: set[int] = set()
+    for label in problem.hamiltonian.paulis.to_labels():
+        mask = 0
+        for position, pauli in enumerate(label):
+            if pauli in {"X", "Y"}:
+                qubit = label_position_to_qubit(label, position)
+                mask ^= 1 << qubit
+        if mask:
+            masks.add(mask)
+    return sorted(masks)
+
+
+def hamming_weight_sector(problem: prepare.Problem) -> int | None:
+    if isinstance(problem.initial_state_hint, list) and len(problem.initial_state_hint) == problem.num_qubits:
+        return sum(int(bit) for bit in problem.initial_state_hint)
+    if problem.num_qubits % 2 == 0:
+        return problem.num_qubits // 2
+    return None
+
+
+def should_refine_subspace(problem: prepare.Problem, energy: float) -> bool:
+    if SUBSPACE_REFINEMENT in {"0", "off", "false", "False"}:
+        return False
+    if problem.num_qubits < 8 or problem.num_qubits > 12:
+        return False
+    if MODEL_CLASS not in {"transverse_field_ising", "weighted_heisenberg_graph"}:
+        return False
+    threshold = target_threshold(problem.reference_energy)
+    if threshold is None or problem.reference_energy is None:
+        return SUBSPACE_REFINEMENT in {"1", "on", "true", "True"}
+    trigger = max(SUBSPACE_TRIGGER_ABS, SUBSPACE_TRIGGER_MULTIPLE * threshold)
+    return abs(energy - float(problem.reference_energy)) <= trigger
+
+
+def selected_basis(problem: prepare.Problem, state: np.ndarray) -> tuple[list[int], str]:
+    dimension = 2**problem.num_qubits
+    probabilities = np.abs(state) ** 2
+
+    if MODEL_CLASS == "weighted_heisenberg_graph":
+        weight = hamming_weight_sector(problem)
+        if weight is not None:
+            basis = [index for index in range(dimension) if index.bit_count() == weight]
+            return basis, f"mode=magnetization_sector weight={weight}"
+
+    top_k = min(SUBSPACE_TOP_STATES, dimension)
+    chosen = set(int(index) for index in np.argsort(probabilities)[-top_k:])
+    masks = pauli_flip_masks(problem)
+    for _ in range(max(0, SUBSPACE_EXPANSION_STEPS)):
+        expanded = set(chosen)
+        for index in chosen:
+            for mask in masks:
+                expanded.add(index ^ mask)
+        chosen = expanded
+    basis = sorted(chosen)
+    return basis, f"mode=selected_ci top={top_k} expand={SUBSPACE_EXPANSION_STEPS}"
+
+
+def subspace_refined_energy(problem: prepare.Problem, final_circuit: QuantumCircuit) -> tuple[float, int, str] | None:
+    if not should_refine_subspace(problem, prepare.energy_from_circuit(final_circuit, problem.hamiltonian)):
+        return None
+    state = Statevector.from_instruction(final_circuit).data
+    basis, mode = selected_basis(problem, state)
+    if not basis:
+        return None
+    matrix = problem.hamiltonian.to_matrix()
+    projected = matrix[np.ix_(basis, basis)]
+    eigenvalues = np.linalg.eigvalsh(projected)
+    return float(np.real(eigenvalues[0])), len(basis), mode
+
+
 def summarize_run(index: int, phase: str, result: ExperimentResult) -> None:
     print(
         f"[{index:03d}] {phase:<11} {result.status:<7} "
@@ -1021,6 +1098,15 @@ def run_experiment(
         final_circuit = bind_parameters(circuit, parameters, best_values)
         _, compiled = prepare.transpile_and_report(final_circuit, backend_target)
         overlap = prepare.overlap_with_reference(final_circuit, problem.reference_state)
+        refined = subspace_refined_energy(problem, final_circuit)
+        if refined is not None:
+            refined_energy, subspace_dim, subspace_mode = refined
+            if refined_energy < energy:
+                description = (
+                    f"{description} | post=subspace_refine {subspace_mode} "
+                    f"dim={subspace_dim} raw_energy={energy:.6f}"
+                )
+                energy = refined_energy
         total_seconds = time.perf_counter() - started
         return ExperimentResult(
             run_id=experiment_id(index, description),

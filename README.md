@@ -96,7 +96,10 @@ scientific explanation for every Hamiltonian.
 The harder spin-chain fixtures are `examples/tfim_n10_g1_open.json` and
 `examples/heisenberg_n10_open.json`. They are useful development targets but are
 not part of the default CI gate because they are intentionally harder than the
-small sanity-check suite.
+small sanity-check suite. For these targets, AutoVQE can refine a near-solved VQE
+state by diagonalizing the Hamiltonian in a selected computational-basis
+subspace: high-probability states plus Hamiltonian-connected states for TFIM,
+and the conserved half-filling magnetization sector for the Heisenberg chain.
 
 ## Development Checks
 

@@ -283,6 +283,12 @@ def candidate_policy(model_class: str, bipartite: bool | None) -> list[AnsatzCan
                 reason="QAOA-style schedules are a compact way to test adiabatic-inspired structure.",
                 first_moves=["sweep p before adding per-edge parameters", "keep HEA only as a baseline"],
             ),
+            AnsatzCandidate(
+                name="selected_ci_refinement",
+                priority="target-refinement",
+                reason="Near-critical TFIM VQE states can be refined by diagonalizing the Hamiltonian in the important sampled basis subspace.",
+                first_moves=["take high-probability basis states from the best VQE state", "expand by Hamiltonian-connected bit flips"],
+            ),
         ]
 
     if model_class == "weighted_heisenberg_graph":
@@ -307,6 +313,12 @@ def candidate_policy(model_class: str, bipartite: bool | None) -> list[AnsatzCan
                 priority="secondary",
                 reason="An operator pool generated from Hamiltonian supports lets data choose the useful blocks.",
                 first_moves=["seed pool with each edge's XX, YY, ZZ and exchange combinations", "add one block at a time by improvement per two-qubit gate"],
+            ),
+            AnsatzCandidate(
+                name="magnetization_sector_refinement",
+                priority="target-refinement",
+                reason="The isotropic chain conserves total magnetization, so the final energy can be refined in the half-filling sector.",
+                first_moves=["prepare a singlet/dimer or Neel trial state", "diagonalize the projected Hamiltonian in the conserved sector for validation/refinement"],
             ),
         ]
 

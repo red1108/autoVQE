@@ -165,6 +165,12 @@ uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1
 5. If not proved, escalate to standard and then deep stages with larger experiment/evaluation budgets.
 6. Return nonzero if no stage proves the target or if no reference is available.
 
+For hard spin-chain targets, a result may include `post=subspace_refine`.
+Treat this as a VQE-seeded subspace method, not as a raw circuit energy. TFIM
+uses high-probability computational basis states expanded by Hamiltonian bit
+flips. Heisenberg uses the conserved magnetization sector when the Hamiltonian
+and initial hint identify one.
+
 This is the Karpathy-style version of the loop: keep the system small, make the objective executable, print the evidence, and let the next action be determined by measured failure instead of by narration.
 
 ## Output Format

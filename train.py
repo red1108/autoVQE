@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 from qiskit.circuit import ParameterVector, QuantumCircuit
-from scipy.optimize import minimize
+from scipy.optimize import differential_evolution, minimize
 
 import prepare
 
@@ -286,7 +286,26 @@ def prepare_reference_state(circuit: QuantumCircuit, problem: prepare.Problem, s
                 circuit.x(qubit)
         return
 
+    if spec.reference_state in {"dimer_even", "dimer_odd"}:
+        start = 0 if spec.reference_state == "dimer_even" else 1
+        for left in range(start, problem.num_qubits - 1, 2):
+            right = left + 1
+            circuit.ry(np.pi / 2.0, left)
+            circuit.x(right)
+            circuit.cx(left, right)
+            circuit.rz(np.pi, left)
+        return
+
     raise ValueError(f"unsupported reference state: {spec.reference_state}")
+
+
+def tfim_reference_state(problem: prepare.Problem) -> str:
+    x_field = 0.0
+    for label, coeff in zip(problem.hamiltonian.paulis.to_labels(), problem.hamiltonian.coeffs, strict=True):
+        active = label_active_qubits(label)
+        if len(active) == 1 and active[0][1] == "X":
+            x_field += float(np.real(coeff))
+    return "plus" if x_field < 0.0 else "minus"
 
 
 def select_edges(
@@ -749,24 +768,28 @@ def optimize_energy(
     calls = 0
     deadline = time.perf_counter() + training_time_budget(problem, spec)
     max_evals = int(os.environ.get("AUTOVQE_MAX_EVALS", str(prepare.MAX_EVALS)))
+    best_values: np.ndarray | None = None
+    best_energy = float("inf")
 
     def objective(values: np.ndarray) -> float:
-        nonlocal calls
+        nonlocal best_energy, best_values, calls
         if time.perf_counter() >= deadline:
             raise RuntimeError("time budget exhausted")
         if calls >= max_evals:
             raise RuntimeError("evaluation budget exhausted")
         candidate = bind_parameters(circuit, parameters, values)
         calls += 1
-        return prepare.energy_from_circuit(candidate, problem.hamiltonian)
+        energy = prepare.energy_from_circuit(candidate, problem.hamiltonian)
+        if energy < best_energy:
+            best_energy = energy
+            best_values = np.asarray(values, dtype=float).copy()
+        return energy
 
     num_params = len(parameters)
     values = initial_parameters(spec, num_params)
     if num_params == 0:
         return values, objective(values), calls
 
-    best_values: np.ndarray | None = None
-    best_energy = float("inf")
     optimizer = spec.optimizer.lower()
 
     for restart_index in range(spec.restarts):
@@ -862,6 +885,53 @@ def optimize_energy(
                         "catol": 1e-5,
                         "disp": False,
                     },
+                )
+            except RuntimeError:
+                continue
+            if result.fun < best_energy:
+                best_energy = float(result.fun)
+                best_values = np.asarray(result.x, dtype=float).copy()
+            continue
+
+        if optimizer == "powell":
+            remaining = max(1, max_evals - calls)
+            try:
+                result = minimize(
+                    objective,
+                    current,
+                    method="Powell",
+                    options={
+                        "maxfev": remaining,
+                        "maxiter": remaining,
+                        "xtol": 1e-4,
+                        "ftol": 1e-5,
+                        "disp": False,
+                    },
+                )
+            except RuntimeError:
+                continue
+            if result.fun < best_energy:
+                best_energy = float(result.fun)
+                best_values = np.asarray(result.x, dtype=float).copy()
+            continue
+
+        if optimizer == "de":
+            remaining = max(1, max_evals - calls)
+            popsize = 5
+            population_evals = max(1, popsize * num_params)
+            maxiter = max(1, remaining // population_evals - 1)
+            bounds = [(-np.pi, np.pi)] * num_params
+            try:
+                result = differential_evolution(
+                    objective,
+                    bounds,
+                    maxiter=maxiter,
+                    popsize=popsize,
+                    seed=spec.seed + restart_index,
+                    polish=False,
+                    tol=1e-3,
+                    updating="immediate",
+                    workers=1,
                 )
             except RuntimeError:
                 continue
@@ -1052,11 +1122,15 @@ def unique_specs(specs: list[ExperimentSpec]) -> list[ExperimentSpec]:
     return unique
 
 
-def build_diversify_pool() -> list[ExperimentSpec]:
+def build_diversify_pool(problem: prepare.Problem) -> list[ExperimentSpec]:
     specs: list[ExperimentSpec] = []
     families = model_family_order()
+    hard_tfim = MODEL_CLASS == "transverse_field_ising" and problem.num_qubits >= 8
     for family_index, family in enumerate(families):
-        for layers in [1, 2, 3]:
+        layer_values = [1, 2, 3]
+        if hard_tfim and family == "tfim_shared":
+            layer_values = [1, 2, 3, 4, 5]
+        for layers in layer_values:
             if family == "two_state_excitation":
                 if layers == 1:
                     specs.append(
@@ -1076,17 +1150,21 @@ def build_diversify_pool() -> list[ExperimentSpec]:
                 continue
 
             if family == "heisenberg_hva":
-                for rotation_mode, reference_state in [
-                    ("shared", "neel"),
-                    ("edge", "neel"),
-                    ("shared", "zero"),
+                for rotation_mode, reference_state, optimizer, init_mode in [
+                    ("shared", "dimer_even", "cobyla", "small_random"),
+                    ("shared", "dimer_odd", "cobyla", "small_random"),
+                    ("shared", "dimer_even", "powell", "small_random"),
+                    ("shared", "dimer_even", "de", "small_random"),
+                    ("shared", "neel", "spsa", "zeros"),
+                    ("edge", "neel", "spsa", "zeros"),
+                    ("shared", "zero", "spsa", "small_random"),
                 ]:
                     specs.append(
                         build_spec(
                             family=family,
                             layers=layers,
-                            optimizer="spsa",
-                            param_init="zeros" if reference_state == "neel" else "small_random",
+                            optimizer=optimizer,
+                            param_init=init_mode,
                             learning_rate=0.18 if rotation_mode == "shared" else 0.12,
                             seed=prepare.SEED + 7 * layers + len(specs),
                             edge_mode="colored",
@@ -1096,7 +1174,7 @@ def build_diversify_pool() -> list[ExperimentSpec]:
                             restarts=2,
                             description=(
                                 "diversify ansatz=heisenberg_hva "
-                                f"layers={layers} rot={rotation_mode} ref={reference_state} "
+                                f"layers={layers} rot={rotation_mode} ref={reference_state} optimizer={optimizer} "
                                 "reason=matched-XXYYZZ"
                             ),
                         )
@@ -1233,12 +1311,23 @@ def build_diversify_pool() -> list[ExperimentSpec]:
                 continue
 
             edge_modes = ["alternate", "full"] if family == "tfim_shared" else ["ends", "alternate"]
-            for optimizer, edge_mode, init_mode in [
-                ("spsa", edge_modes[0], "small_random"),
-                ("cobyla", edge_modes[0], "small_random"),
-                ("coordinate", edge_modes[1], "zeros"),
-            ]:
-                reference_state = "minus" if MODEL_CLASS == "transverse_field_ising" else "zero"
+            if family == "tfim_shared" and hard_tfim:
+                variants = [
+                    ("spsa", "alternate", "small_random"),
+                    ("cobyla", "alternate", "small_random"),
+                    ("cobyla", "full", "small_random"),
+                    ("powell", "full", "small_random"),
+                    ("de", "full", "small_random"),
+                    ("coordinate", "full", "zeros"),
+                ]
+            else:
+                variants = [
+                    ("spsa", edge_modes[0], "small_random"),
+                    ("cobyla", edge_modes[0], "small_random"),
+                    ("coordinate", edge_modes[1], "zeros"),
+                ]
+            for optimizer, edge_mode, init_mode in variants:
+                reference_state = tfim_reference_state(problem) if MODEL_CLASS == "transverse_field_ising" else "zero"
                 specs.append(
                     build_spec(
                         family=family,
@@ -1265,26 +1354,33 @@ def complexify_families(best_family: str) -> list[str]:
     return order[:3]
 
 
-def build_complexify_pool(best_family: str, seed_offset: int = 0) -> list[ExperimentSpec]:
+def build_complexify_pool(best_family: str, problem: prepare.Problem, seed_offset: int = 0) -> list[ExperimentSpec]:
     specs: list[ExperimentSpec] = []
+    hard_tfim = MODEL_CLASS == "transverse_field_ising" and problem.num_qubits >= 8
     for family_index, family in enumerate(complexify_families(best_family)):
         for layers in [4, 5, 6, 7, 8]:
             if family == "heisenberg_hva":
-                for rotation_mode in ["shared", "edge"]:
+                for rotation_mode, reference_state, optimizer in [
+                    ("shared", "dimer_even", "cobyla"),
+                    ("shared", "dimer_odd", "cobyla"),
+                    ("shared", "dimer_even", "powell"),
+                    ("shared", "dimer_even", "de"),
+                    ("edge", "neel", "spsa"),
+                ]:
                     specs.append(
                         build_spec(
                             family=family,
                             layers=layers,
-                            optimizer="spsa",
+                            optimizer=optimizer,
                             param_init="zeros",
                             learning_rate=0.12 if rotation_mode == "edge" else 0.16,
                             seed=prepare.SEED + seed_offset + 35 * family_index + 5 * layers + len(specs),
                             edge_mode="colored",
                             rotation_mode=rotation_mode,
-                            reference_state="neel",
+                            reference_state=reference_state,
                             spsa_steps=28,
                             restarts=2,
-                            description=f"complexify ansatz=heisenberg_hva layers={layers} rot={rotation_mode} ref=neel reason=matched-XXYYZZ",
+                            description=f"complexify ansatz=heisenberg_hva layers={layers} rot={rotation_mode} ref={reference_state} optimizer={optimizer} reason=matched-XXYYZZ",
                         )
                     )
                 continue
@@ -1364,21 +1460,31 @@ def build_complexify_pool(best_family: str, seed_offset: int = 0) -> list[Experi
                 )
                 continue
 
-            for edge_mode in ["full", "alternate", "random_2"]:
-                reference_state = "minus" if MODEL_CLASS == "transverse_field_ising" else "zero"
+            if family == "tfim_shared" and hard_tfim:
+                variants = [
+                    ("cobyla", "alternate"),
+                    ("cobyla", "full"),
+                    ("powell", "full"),
+                    ("de", "full"),
+                    ("spsa", "full"),
+                ]
+            else:
+                variants = [("spsa", edge_mode) for edge_mode in ["full", "alternate", "random_2"]]
+            for optimizer, edge_mode in variants:
+                reference_state = tfim_reference_state(problem) if MODEL_CLASS == "transverse_field_ising" else "zero"
                 specs.append(
                     build_spec(
                         family=family,
                         layers=layers,
-                        optimizer="spsa",
+                        optimizer=optimizer,
                         param_init="small_random",
-                        learning_rate=0.12,
+                        learning_rate=0.12 if optimizer == "spsa" else 0.18,
                         seed=prepare.SEED + seed_offset + 110 * family_index + 5 * layers + len(specs),
                         edge_mode=edge_mode,
                         reference_state=reference_state,
-                        spsa_steps=26,
+                        spsa_steps=26 if optimizer == "spsa" else 18,
                         restarts=3 if family == "tfim_shared" else 2,
-                        description=f"complexify ansatz={family} layers={layers} edge={edge_mode} ref={reference_state}",
+                        description=f"complexify ansatz={family} layers={layers} optimizer={optimizer} edge={edge_mode} ref={reference_state}",
                     )
                 )
 
@@ -1398,7 +1504,7 @@ def compression_family_order(best_family: str) -> list[str]:
     return mapping.get(best_family, [best_family, "hea", "brick"])
 
 
-def build_compression_pool(best_spec: ExperimentSpec, round_index: int = 0) -> list[ExperimentSpec]:
+def build_compression_pool(best_spec: ExperimentSpec, problem: prepare.Problem, round_index: int = 0) -> list[ExperimentSpec]:
     specs: list[ExperimentSpec] = []
     min_layers = max(1, best_spec.layers - 3)
     max_layers = max(2, best_spec.layers)
@@ -1409,6 +1515,8 @@ def build_compression_pool(best_spec: ExperimentSpec, round_index: int = 0) -> l
         for layers in layer_values:
             if family == "heisenberg_hva":
                 variants = [
+                    ("shared", "dimer_even"),
+                    ("shared", "dimer_odd"),
                     ("shared", "neel"),
                     ("shared", "zero"),
                     ("edge", "neel"),
@@ -1515,6 +1623,7 @@ def build_compression_pool(best_spec: ExperimentSpec, round_index: int = 0) -> l
 
             edge_variants = ["ends", "even", "alternate"] if family == "tfim_shared" else ["ends", "random_1", "alternate"]
             for edge_mode in edge_variants:
+                reference_state = tfim_reference_state(problem) if MODEL_CLASS == "transverse_field_ising" else "zero"
                 specs.append(
                     build_spec(
                         family=family,
@@ -1524,6 +1633,7 @@ def build_compression_pool(best_spec: ExperimentSpec, round_index: int = 0) -> l
                         learning_rate=0.14,
                         seed=seed_base + 100 * family_index + 5 * layers + len(specs),
                         edge_mode=edge_mode,
+                        reference_state=reference_state,
                         spsa_steps=14,
                         restarts=3 if family == "tfim_shared" else 2,
                         description=f"compress ansatz={family} layers={layers} edge={edge_mode}",
@@ -1586,7 +1696,7 @@ def main() -> None:
     best_result: ExperimentResult | None = None
     best_spec: ExperimentSpec | None = None
     tried: set[tuple[Any, ...]] = set()
-    diversify_pool = build_diversify_pool()
+    diversify_pool = build_diversify_pool(problem)
     complexify_pool: list[ExperimentSpec] = []
     compression_pool: list[ExperimentSpec] = []
     compression_round = 0
@@ -1597,6 +1707,7 @@ def main() -> None:
     runs_since_compression_keep = 0
     families_seen: set[str] = set()
     tried_more_complex = False
+    complexify_attempts = 0
     target_reached_at: int | None = None
 
     while True:
@@ -1607,12 +1718,14 @@ def main() -> None:
             spec = pop_next_untried(diversify_pool, tried)
             if spec is None:
                 phase = "complexify"
+                runs_since_energy_keep = 0
+                complexify_attempts = 0
                 continue
             phase_label = "diversify"
         elif phase == "complexify":
             if not complexify_pool:
                 family = best_spec.family if best_spec is not None else "hea"
-                complexify_pool = build_complexify_pool(family)
+                complexify_pool = build_complexify_pool(family, problem)
             spec = pop_next_untried(complexify_pool, tried)
             if spec is None:
                 phase = "compress"
@@ -1622,7 +1735,7 @@ def main() -> None:
             if best_spec is None:
                 best_spec = build_baseline_spec()
             if not compression_pool:
-                compression_pool = build_compression_pool(best_spec, round_index=compression_round)
+                compression_pool = build_compression_pool(best_spec, problem, round_index=compression_round)
                 compression_round += 1
             spec = pop_next_untried(compression_pool, tried)
             if spec is None:
@@ -1676,13 +1789,16 @@ def main() -> None:
         if phase == "diversify":
             if len(families_seen) >= 4 and runs_since_energy_keep >= 10:
                 phase = "complexify"
+                runs_since_energy_keep = 0
+                complexify_attempts = 0
             if MAX_EXPERIMENTS and experiment_count >= MAX_EXPERIMENTS:
                 break
             continue
 
         if phase == "complexify":
             tried_more_complex = True
-            if experiment_count >= 35 and runs_since_energy_keep >= 12:
+            complexify_attempts += 1
+            if complexify_attempts >= 16 and runs_since_energy_keep >= 12:
                 phase = "compress"
             if MAX_EXPERIMENTS and experiment_count >= MAX_EXPERIMENTS:
                 break

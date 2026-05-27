@@ -1,0 +1,54 @@
+{
+  "name": "heisenberg_n10_open",
+  "pauli_terms": [
+    { "pauli": "XXIIIIIIII", "coeff": 1.0 },
+    { "pauli": "YYIIIIIIII", "coeff": 1.0 },
+    { "pauli": "ZZIIIIIIII", "coeff": 1.0 },
+    { "pauli": "IXXIIIIIII", "coeff": 1.0 },
+    { "pauli": "IYYIIIIIII", "coeff": 1.0 },
+    { "pauli": "IZZIIIIIII", "coeff": 1.0 },
+    { "pauli": "IIXXIIIIII", "coeff": 1.0 },
+    { "pauli": "IIYYIIIIII", "coeff": 1.0 },
+    { "pauli": "IIZZIIIIII", "coeff": 1.0 },
+    { "pauli": "IIIXXIIIII", "coeff": 1.0 },
+    { "pauli": "IIIYYIIIII", "coeff": 1.0 },
+    { "pauli": "IIIZZIIIII", "coeff": 1.0 },
+    { "pauli": "IIIIXXIIII", "coeff": 1.0 },
+    { "pauli": "IIIIYYIIII", "coeff": 1.0 },
+    { "pauli": "IIIIZZIIII", "coeff": 1.0 },
+    { "pauli": "IIIIIXXIII", "coeff": 1.0 },
+    { "pauli": "IIIIIYYIII", "coeff": 1.0 },
+    { "pauli": "IIIIIZZIII", "coeff": 1.0 },
+    { "pauli": "IIIIIIXXII", "coeff": 1.0 },
+    { "pauli": "IIIIIIYYII", "coeff": 1.0 },
+    { "pauli": "IIIIIIZZII", "coeff": 1.0 },
+    { "pauli": "IIIIIIIXXI", "coeff": 1.0 },
+    { "pauli": "IIIIIIIYYI", "coeff": 1.0 },
+    { "pauli": "IIIIIIIZZI", "coeff": 1.0 },
+    { "pauli": "IIIIIIIIXX", "coeff": 1.0 },
+    { "pauli": "IIIIIIIIYY", "coeff": 1.0 },
+    { "pauli": "IIIIIIIIZZ", "coeff": 1.0 }
+  ],
+  "reference_energy": -17.032140829131524,
+  "reference_note": "Exact diagonalization in the Pauli convention used by prepare.py.",
+  "basis_gates": [
+    "rx",
+    "ry",
+    "rz",
+    "cx"
+  ],
+  "coupling_map": [
+    [0, 1], [1, 0],
+    [1, 2], [2, 1],
+    [2, 3], [3, 2],
+    [3, 4], [4, 3],
+    [4, 5], [5, 4],
+    [5, 6], [6, 5],
+    [6, 7], [7, 6],
+    [7, 8], [8, 7],
+    [8, 9], [9, 8]
+  ],
+  "initial_state_hint": [
+    0, 1, 0, 1, 0, 1, 0, 1, 0, 1
+  ]
+}

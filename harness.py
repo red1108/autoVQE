@@ -25,6 +25,10 @@ DEFAULT_BENCHMARK_PROBLEMS = (
     Path("examples/h2_4q.json"),
     Path("examples/ising_1d_5q.json"),
 )
+HARD_BENCHMARK_PROBLEMS = (
+    Path("examples/tfim_n10_g1_open.json"),
+    Path("examples/heisenberg_n10_open.json"),
+)
 LARGE_EXAMPLE_PROBLEMS = (Path("examples/ising_1d_9q.json"),)
 
 
@@ -896,8 +900,10 @@ def benchmark_problem(
     )
 
 
-def default_benchmark_problems(include_large: bool) -> list[Path]:
+def default_benchmark_problems(include_hard: bool, include_large: bool) -> list[Path]:
     paths = list(DEFAULT_BENCHMARK_PROBLEMS)
+    if include_hard:
+        paths.extend(HARD_BENCHMARK_PROBLEMS)
     if include_large:
         paths.extend(LARGE_EXAMPLE_PROBLEMS)
     return paths
@@ -926,7 +932,7 @@ def print_benchmark_summary(summaries: list[BenchmarkSummary]) -> None:
 def run_benchmark(args: argparse.Namespace) -> int:
     problem_paths = [Path(path) for path in args.problems]
     if not problem_paths:
-        problem_paths = default_benchmark_problems(include_large=args.include_large)
+        problem_paths = default_benchmark_problems(include_hard=args.include_hard, include_large=args.include_large)
     if not problem_paths:
         raise RuntimeError("no benchmark problems found")
 
@@ -1160,7 +1166,8 @@ def main() -> int:
 
     benchmark_parser = subparsers.add_parser("benchmark", help="run isolated campaigns over multiple problem files")
     benchmark_parser.add_argument("problems", nargs="*", help="problem JSON files; defaults to the small examples")
-    benchmark_parser.add_argument("--include-large", action="store_true", help="also include the slower 9-qubit example")
+    benchmark_parser.add_argument("--include-hard", action="store_true", help="also include the n=10 TFIM and Heisenberg hard targets")
+    benchmark_parser.add_argument("--include-large", action="store_true", help="also include the slower 9-qubit weighted spin example")
     benchmark_parser.add_argument("--mode", choices=["smoke", "full"], default="smoke")
     benchmark_parser.add_argument("--experiments", type=int, default=8)
     benchmark_parser.add_argument("--experiment-seconds", type=float, default=0.5)

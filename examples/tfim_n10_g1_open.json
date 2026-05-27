@@ -1,0 +1,46 @@
+{
+  "name": "tfim_n10_g1_open",
+  "pauli_terms": [
+    { "pauli": "ZZIIIIIIII", "coeff": -1.0 },
+    { "pauli": "IZZIIIIIII", "coeff": -1.0 },
+    { "pauli": "IIZZIIIIII", "coeff": -1.0 },
+    { "pauli": "IIIZZIIIII", "coeff": -1.0 },
+    { "pauli": "IIIIZZIIII", "coeff": -1.0 },
+    { "pauli": "IIIIIZZIII", "coeff": -1.0 },
+    { "pauli": "IIIIIIZZII", "coeff": -1.0 },
+    { "pauli": "IIIIIIIZZI", "coeff": -1.0 },
+    { "pauli": "IIIIIIIIZZ", "coeff": -1.0 },
+    { "pauli": "XIIIIIIIII", "coeff": -1.0 },
+    { "pauli": "IXIIIIIIII", "coeff": -1.0 },
+    { "pauli": "IIXIIIIIII", "coeff": -1.0 },
+    { "pauli": "IIIXIIIIII", "coeff": -1.0 },
+    { "pauli": "IIIIXIIIII", "coeff": -1.0 },
+    { "pauli": "IIIIIXIIII", "coeff": -1.0 },
+    { "pauli": "IIIIIIXIII", "coeff": -1.0 },
+    { "pauli": "IIIIIIIXII", "coeff": -1.0 },
+    { "pauli": "IIIIIIIIXI", "coeff": -1.0 },
+    { "pauli": "IIIIIIIIIX", "coeff": -1.0 }
+  ],
+  "reference_energy": -12.381489999654752,
+  "reference_note": "Exact diagonalization in the Pauli convention used by prepare.py.",
+  "basis_gates": [
+    "rx",
+    "ry",
+    "rz",
+    "cx"
+  ],
+  "coupling_map": [
+    [0, 1], [1, 0],
+    [1, 2], [2, 1],
+    [2, 3], [3, 2],
+    [3, 4], [4, 3],
+    [4, 5], [5, 4],
+    [5, 6], [6, 5],
+    [6, 7], [7, 6],
+    [7, 8], [8, 7],
+    [8, 9], [9, 8]
+  ],
+  "initial_state_hint": [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+  ]
+}

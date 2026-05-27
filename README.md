@@ -52,6 +52,9 @@ uv run harness.py plan
 # Run isolated smoke campaigns over the small examples.
 uv run harness.py benchmark
 
+# Include the n=10 hard spin-chain targets.
+uv run harness.py benchmark --include-hard
+
 # Run the target-driven solver on a specific problem.
 uv run harness.py solve examples/ising_1d_5q.json --rel-tol 0.001
 ```
@@ -89,6 +92,11 @@ two-state excitation mixers, and shallow hardware-efficient baselines.
 
 Hardware-efficient ansatzes are treated as baselines, not as the default
 scientific explanation for every Hamiltonian.
+
+The harder spin-chain fixtures are `examples/tfim_n10_g1_open.json` and
+`examples/heisenberg_n10_open.json`. They are useful development targets but are
+not part of the default CI gate because they are intentionally harder than the
+small sanity-check suite.
 
 ## Development Checks
 

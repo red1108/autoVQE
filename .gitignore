@@ -5,7 +5,7 @@ __pycache__/
 results.tsv
 run.log
 benchmark_*/
-solve_runs/
+solve_runs*/
 .DS_Store
 .pytest_cache/
 *.egg-info/

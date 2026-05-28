@@ -8,6 +8,10 @@ benchmark_*/
 solve_runs*/
 .DS_Store
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 *.egg-info/
 
 # For AI agents

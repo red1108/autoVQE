@@ -4,10 +4,28 @@ version = "0.1.0"
 description = "Tiny hardware-aware VQE automation harness"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "red1108" },
+]
+keywords = ["vqe", "quantum-computing", "qiskit", "variational-algorithms"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = [
     "qiskit>=1.0",
     "scipy>=1.15",
 ]
+
+[project.urls]
+Homepage = "https://github.com/red1108/autoVQE"
+Repository = "https://github.com/red1108/autoVQE"
+Issues = "https://github.com/red1108/autoVQE/issues"
 
 [tool.uv]
 package = false

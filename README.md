@@ -14,6 +14,8 @@ The project is intentionally script-first:
   references for small systems, and reports compiled gate counts.
 - `examples/` contains named Hamiltonian fixtures.
 - `program.md` is the agent protocol for automated research runs.
+- `docs/` contains agent-facing playbooks and benchmark notes.
+- `CONTRIBUTING.md` describes the checks expected before a pull request.
 
 ## Quick Start
 
@@ -86,27 +88,46 @@ exact diagonalization to compute it.
 ## Ansatz Families
 
 The harness classifies each Hamiltonian from its Pauli structure and chooses a
-candidate order before running experiments. Built-in families include Pauli
-Hamiltonian evolution, Heisenberg/exchange HVA, TFIM schedules, HF-hint
-two-state excitation mixers, and shallow hardware-efficient baselines.
+candidate order before running experiments. Built-in families include U(1)
+number-preserving exchange layers, Pauli term-evolution HVA,
+Heisenberg/exchange HVA, TFIM schedules with parity-preserving
+counterdiabatic edge moves, and shallow hardware-efficient baselines. A single
+shared-angle `exp(-i theta H)` candidate is not accepted as a VQE ansatz.
 
 Hardware-efficient ansatzes are treated as baselines, not as the default
 scientific explanation for every Hamiltonian.
 
+For method-selection context, read `docs/ansatz_playbook.md`. The intended
+design is that domain knowledge lives in docs until an experiment justifies
+turning it into code.
+
+## Verified Targets
+
+These commands are expected to pass on the current release candidate:
+
+```bash
+uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
+uv run harness.py solve examples/tfim_n10_g1_open.json examples/heisenberg_n10_open.json --rel-tol 0.001 --max-stages 2
+```
+
 The harder spin-chain fixtures are `examples/tfim_n10_g1_open.json` and
 `examples/heisenberg_n10_open.json`. They are useful development targets but are
 not part of the default CI gate because they are intentionally harder than the
-small sanity-check suite. For these targets, AutoVQE can refine a near-solved VQE
-state by diagonalizing the Hamiltonian in a selected computational-basis
-subspace: high-probability states plus Hamiltonian-connected states for TFIM,
-and the conserved half-filling magnetization sector for the Heisenberg chain.
+small sanity-check suite. `solve` reports raw circuit VQE energy by default;
+classical post-processing must not be counted as a VQE pass.
+
+Large chemistry fixtures are available as explicit targets, including
+`examples/h2_4q_pennylane_0p6614.json` and
+`examples/n2_16q_pennylane_sto3g_active14e8o_r2p07416.json`. The N2 fixture is
+kept out of default benchmark commands because it is a 16-qubit, 1281-term
+stress test.
 
 ## Development Checks
 
 ```bash
 uv run python -m py_compile harness.py train.py prepare.py
 uv run harness.py check
-uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001
+uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
 git diff --check
 ```
 

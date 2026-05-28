@@ -30,6 +30,7 @@ HARD_BENCHMARK_PROBLEMS = (
     Path("examples/heisenberg_n10_open.json"),
 )
 LARGE_EXAMPLE_PROBLEMS = (Path("examples/ising_1d_9q.json"),)
+MIN_ADMISSIBLE_PARAMS = 2
 
 
 @dataclass(frozen=True)
@@ -100,9 +101,11 @@ class ResultRow:
         marker = "ansatz="
         if marker not in self.description:
             known = [
-                "two_state_excitation",
+                "u1_exchange",
                 "heisenberg_hva",
                 "pauli_hva",
+                "tfim_counterdiabatic",
+                "tfim_colored",
                 "tfim_factorized",
                 "tfim_shared",
                 "symm",
@@ -116,6 +119,14 @@ class ResultRow:
             return "unknown"
         tail = self.description.split(marker, 1)[1]
         return tail.split()[0]
+
+    @property
+    def is_admissible(self) -> bool:
+        if self.num_params < MIN_ADMISSIBLE_PARAMS:
+            return False
+        if self.family == "pauli_hva" and "rot=shared" in self.description:
+            return False
+        return True
 
 
 @dataclass(frozen=True)
@@ -252,134 +263,88 @@ def classify_model(
     return "general_two_local_pauli", evidence, ["single-family search without an adaptive/operator-pool fallback"]
 
 
-def candidate_policy(model_class: str, bipartite: bool | None) -> list[AnsatzCandidate]:
-    if model_class == "classical_ising_or_qubo":
-        return [
-            AnsatzCandidate(
-                name="qaoa_cost_mixer",
-                priority="primary",
-                reason="Z-diagonal Hamiltonians should use cost evolution plus a non-commuting mixer before generic HEA.",
-                first_moves=["try p=1..4", "compare X mixer against constraint-preserving mixers if constraints exist"],
-            ),
-            AnsatzCandidate(
-                name="commuting_group_hva",
-                priority="secondary",
-                reason="Commuting Z groups give a compact phase-separator baseline.",
-                first_moves=["group terms by support coloring", "compress equivalent phase blocks"],
-            ),
-        ]
+def candidate_policy(
+    problem: prepare.Problem,
+    groups: list[SupportGroup],
+    locality_counts: Counter[int],
+    bipartite: bool | None,
+) -> list[AnsatzCandidate]:
+    all_ops = [op for group in groups for op in group.terms if op]
+    two_qubit_groups = [group for group in groups if len(group.qubits) == 2]
+    single_qubit_ops = {op for group in groups if len(group.qubits) == 1 for op in group.terms}
+    z_only = bool(all_ops) and all(set(op) <= {"Z"} for op in all_ops)
+    has_zz_edges = any("ZZ" in group.terms for group in two_qubit_groups)
+    has_x_field = "X" in single_qubit_ops
+    has_high_locality = bool(locality_counts) and max(locality_counts) > 2
 
-    if model_class == "transverse_field_ising":
-        return [
-            AnsatzCandidate(
-                name="tfim_hva",
-                priority="primary",
-                reason="The Hamiltonian naturally separates into ZZ interaction and X-field evolution blocks.",
-                first_moves=["alternate ZZ-cost and X-field layers", "start with shared angles then factorize edge angles"],
-            ),
-            AnsatzCandidate(
-                name="qaoa_like_tfim",
-                priority="secondary",
-                reason="QAOA-style schedules are a compact way to test adiabatic-inspired structure.",
-                first_moves=["sweep p before adding per-edge parameters", "keep HEA only as a baseline"],
-            ),
-            AnsatzCandidate(
-                name="selected_ci_refinement",
-                priority="target-refinement",
-                reason="Near-critical TFIM VQE states can be refined by diagonalizing the Hamiltonian in the important sampled basis subspace.",
-                first_moves=["take high-probability basis states from the best VQE state", "expand by Hamiltonian-connected bit flips"],
-            ),
-        ]
+    matched_xy = 0
+    matched_xyz = 0
+    for group in two_qubit_groups:
+        ops = set(group.terms)
+        if {"XX", "YY"}.issubset(ops) and close_enough([group.terms["XX"], group.terms["YY"]]):
+            matched_xy += 1
+        if {"XX", "YY", "ZZ"}.issubset(ops):
+            coeffs = [group.terms["XX"], group.terms["YY"], group.terms["ZZ"]]
+            if close_enough(coeffs):
+                matched_xyz += 1
 
-    if model_class == "weighted_heisenberg_graph":
-        moves = ["build edge-local exp[-i theta (XX+YY+ZZ)] blocks", "test shared-angle then edge-factorized HVA"]
-        if bipartite:
-            moves.append("try Neel/reference preparation as counted ansatz gates")
-        return [
-            AnsatzCandidate(
-                name="heisenberg_hva",
-                priority="primary",
-                reason="Matched XX, YY, ZZ terms point to exchange/Heisenberg evolution rather than TFIM blocks.",
-                first_moves=moves,
-            ),
-            AnsatzCandidate(
-                name="xy_exchange_pool",
-                priority="primary",
-                reason="XX+YY exchange blocks preserve magnetization and are a compact adaptive pool for spin graphs.",
-                first_moves=["rank edge-local XX+YY and ZZ blocks by short smoke runs", "prefer graph-color layers over all-to-all ladders"],
-            ),
-            AnsatzCandidate(
-                name="qubit_adapt_edge_pool",
-                priority="secondary",
-                reason="An operator pool generated from Hamiltonian supports lets data choose the useful blocks.",
-                first_moves=["seed pool with each edge's XX, YY, ZZ and exchange combinations", "add one block at a time by improvement per two-qubit gate"],
-            ),
-            AnsatzCandidate(
-                name="magnetization_sector_refinement",
-                priority="target-refinement",
-                reason="The isotropic chain conserves total magnetization, so the final energy can be refined in the half-filling sector.",
-                first_moves=["prepare a singlet/dimer or Neel trial state", "diagonalize the projected Hamiltonian in the conserved sector for validation/refinement"],
-            ),
-        ]
+    two_count = max(1, len(two_qubit_groups))
+    hint = problem.initial_state_hint if isinstance(problem.initial_state_hint, list) else None
+    has_nontrivial_hint = bool(hint) and 0 < sum(int(bit) for bit in hint) < len(hint)
 
-    if model_class == "xy_or_xxz_spin_graph":
-        return [
-            AnsatzCandidate(
-                name="xy_exchange_hva",
-                priority="primary",
-                reason="Matched XX/YY terms suggest number- or magnetization-preserving exchange layers.",
-                first_moves=["use edge-color exchange layers", "add ZZ phases only if present in the Hamiltonian"],
-            ),
-            AnsatzCandidate(
-                name="qubit_adapt_spin_pool",
-                priority="secondary",
-                reason="Pauli pools over the support graph can find the useful interaction subset.",
-                first_moves=["start with Hamiltonian terms", "prune operators with near-zero parameters after convergence"],
-            ),
-        ]
-
-    if model_class == "chemistry_or_general_pauli":
-        return [
-            AnsatzCandidate(
-                name="symmetry_preserving_or_ucc",
-                priority="primary-if-fermionic-metadata-exists",
-                reason="Fermionic Hamiltonians should exploit reference states and particle/spin symmetries when metadata is available.",
-                first_moves=["look for electron/orbital metadata", "use HF/UCC-like or excitation-preserving blocks if present"],
-            ),
-            AnsatzCandidate(
-                name="commuting_group_hva",
-                priority="primary-fallback",
-                reason="Without fermionic metadata, commuting Pauli groups are the cleanest Hamiltonian-derived structure.",
-                first_moves=["group commuting Pauli strings", "compare grouped HVA against a shallow HEA baseline"],
-            ),
-            AnsatzCandidate(
-                name="qubit_adapt_pauli_pool",
-                priority="secondary",
-                reason="A Pauli operator pool keeps the search problem-derived while avoiding a single hard-coded ansatz.",
-                first_moves=["rank pool operators with smoke runs", "keep additions only if energy/gate tradeoff improves"],
-            ),
-        ]
-
-    return [
-        AnsatzCandidate(
-            name="commuting_group_hva",
+    candidates: list[AnsatzCandidate] = []
+    if has_nontrivial_hint:
+        candidates.append(AnsatzCandidate(
+            name="u1_exchange",
             priority="primary",
-            reason="For an unknown Pauli model, start from the Hamiltonian's own non-commuting groups.",
-            first_moves=["build groups from Pauli commutation", "compare reps=1..3 under a smoke budget"],
-        ),
-        AnsatzCandidate(
-            name="qubit_adapt_pauli_pool",
+            reason="A nontrivial reference hint defines a sector; candidate moves should preserve that invariant unless used as a baseline.",
+            first_moves=["prepare the reference explicitly", "use moves that conserve the reference sector"],
+        ))
+    if z_only:
+        candidates.append(AnsatzCandidate(
+            name="qaoa_cost_mixer",
+            priority="primary",
+            reason="Commuting diagonal terms need a non-commuting mixer to produce a variational search space.",
+            first_moves=["group diagonal terms", "compare mixers that preserve any detected constraints"],
+        ))
+    if has_zz_edges and has_x_field:
+        candidates.append(AnsatzCandidate(
+            name="tfim_counterdiabatic",
+            priority="primary",
+            reason="Distinct ZZ interaction and X-field terms support parity-preserving counterdiabatic edge moves from their commutators.",
+            first_moves=["prepare the X-field reference", "add explicit YZ/ZY edge rotations before broad hardware ansatz trials"],
+        ))
+    if matched_xy / two_count >= 0.6 or matched_xyz / two_count >= 0.6:
+        moves = ["use exchange-style edge layers", "prefer graph-colored or edge-factorized parameters"]
+        if bipartite:
+            moves.append("try an explicit bipartite reference preparation")
+        candidates.append(AnsatzCandidate(
+            name="heisenberg_hva",
+            priority="primary",
+            reason="Matched two-body operator pairs indicate a conserved-sector exchange move.",
+            first_moves=moves,
+        ))
+    if has_high_locality or not z_only:
+        candidates.append(AnsatzCandidate(
+            name="pauli_hva",
             priority="secondary",
-            reason="Adaptive pools are safer than guessing one generic ansatz family.",
-            first_moves=["start from Hamiltonian supports", "add hardware-native entanglers only after physics-inspired blocks stall"],
-        ),
-        AnsatzCandidate(
-            name="hardware_efficient_baseline",
-            priority="baseline-only",
-            reason="HEA is useful as a control, not as the default scientific explanation.",
-            first_moves=["keep shallow", "only complexify after problem-derived candidates fail"],
-        ),
-    ]
+            reason="Non-commuting or high-locality operators should be searched as a pool instead of hard-coding one circuit family.",
+            first_moves=["rank operators by short runs", "keep additions only when energy improves per resource cost"],
+        ))
+        candidates.append(AnsatzCandidate(
+            name="commuting_group_hva",
+            priority="secondary",
+            reason="Commuting groups provide a Hamiltonian-derived fallback without depending on a named benchmark class.",
+            first_moves=["group by commutation", "compare shallow grouped evolution against the incumbent"],
+        ))
+
+    candidates.append(AnsatzCandidate(
+        name="hea",
+        priority="baseline-only",
+        reason="A generic hardware ansatz is a control for search failure, not the default explanation.",
+        first_moves=["keep it shallow", "use it to decide whether structured candidates are missing expressivity"],
+    ))
+    return candidates
 
 
 def analyze_problem(path: str | Path = DEFAULT_PROBLEM) -> HamiltonianProfile:
@@ -429,7 +394,7 @@ def analyze_problem(path: str | Path = DEFAULT_PROBLEM) -> HamiltonianProfile:
         support_graph_bipartite=bipartite,
         model_class=model_class,
         evidence=evidence,
-        candidates=candidate_policy(model_class, bipartite),
+        candidates=candidate_policy(problem, support_groups, locality_counts, bipartite),
         avoid=avoid,
     )
 
@@ -497,7 +462,7 @@ def valid_rows(rows: list[ResultRow], *, include_smoke: bool = False) -> list[Re
     return [
         row
         for row in rows
-        if row.status != "crash" and (include_smoke or not row.is_smoke)
+        if row.status != "crash" and row.is_admissible and (include_smoke or not row.is_smoke)
     ]
 
 
@@ -522,7 +487,7 @@ def target_report(
     abs_tol: float,
 ) -> tuple[bool, float | None, float | None, float | None]:
     threshold = target_threshold(reference_energy, rel_tol, abs_tol)
-    if row is None or threshold is None or reference_energy is None:
+    if row is None or not row.is_admissible or threshold is None or reference_energy is None:
         return False, None, threshold, None
     gap = abs(row.energy - float(reference_energy))
     rel_error = gap / max(abs(float(reference_energy)), 1e-15)
@@ -764,6 +729,30 @@ def run_self_check(with_smoke: bool = False) -> int:
         check(best_row(rows) is not None, "full-result incumbent can be selected")
     else:
         check(True, "fresh checkout does not require results.tsv")
+    ineligible_row = ResultRow(
+        run_id="ineligible",
+        energy=-999.0,
+        singleq_count=0,
+        twoq_count=0,
+        total_gate_count=0,
+        num_params=1,
+        status="keep",
+        description="ansatz=pauli_hva layers=1 rot=shared ref=hint",
+    )
+    real_row = ResultRow(
+        run_id="real",
+        energy=0.0,
+        singleq_count=0,
+        twoq_count=0,
+        total_gate_count=0,
+        num_params=2,
+        status="keep",
+        description="ansatz=pauli_hva layers=1 rot=term ref=hint",
+    )
+    check(
+        best_row([ineligible_row, real_row], include_smoke=True) == real_row,
+        "one-parameter shared Pauli-HVA is ineligible",
+    )
 
     timeout = campaign_timeout(profile, mode="smoke", experiments=1, experiment_seconds=0.01)
     check(timeout >= 60.0, "smoke campaign timeout is bounded")
@@ -966,9 +955,9 @@ def run_benchmark(args: argparse.Namespace) -> int:
 
 def default_solve_stages(max_stages: int) -> list[SolveStage]:
     stages = [
-        SolveStage("smoke", "smoke", experiments=45, experiment_seconds=2.0, max_evals=300, timeout=120.0),
-        SolveStage("standard", "standard", experiments=90, experiment_seconds=4.0, max_evals=800, timeout=300.0),
-        SolveStage("deep", "deep", experiments=160, experiment_seconds=8.0, max_evals=1800, timeout=900.0),
+        SolveStage("smoke", "smoke", experiments=16, experiment_seconds=2.0, max_evals=300, timeout=120.0),
+        SolveStage("standard", "standard", experiments=90, experiment_seconds=4.0, max_evals=25000, timeout=900.0),
+        SolveStage("deep", "deep", experiments=160, experiment_seconds=8.0, max_evals=6000, timeout=900.0),
     ]
     return stages[:max(1, max_stages)]
 
@@ -1003,7 +992,6 @@ def solve_problem(
     output_dir: Path,
     max_stages: int,
     timeout: float | None,
-    extra_compress: int,
 ) -> SolveSummary:
     profile = analyze_problem(problem_path)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1041,7 +1029,6 @@ def solve_problem(
             "AUTOVQE_TARGET_REL_ERROR": str(rel_tol),
             "AUTOVQE_TARGET_ABS_ERROR": str(abs_tol),
             "AUTOVQE_STOP_AT_TARGET": "1",
-            "AUTOVQE_TARGET_EXTRA_COMPRESS": str(extra_compress),
         }
 
         print()
@@ -1060,9 +1047,10 @@ def solve_problem(
         if print_target_status(best=stage_best, reference_energy=profile.reference_energy, rel_tol=rel_tol, abs_tol=abs_tol):
             break
 
-    if all_rows:
+    eligible_rows = [(stage, row) for stage, row in all_rows if row.status != "crash" and row.is_admissible]
+    if eligible_rows:
         best_stage, best = min(
-            all_rows,
+            eligible_rows,
             key=lambda item: (item[1].energy, item[1].compression_key),
         )
     else:
@@ -1100,7 +1088,6 @@ def run_solve(args: argparse.Namespace) -> int:
             output_dir=Path(args.output_dir),
             max_stages=args.max_stages,
             timeout=args.timeout,
-            extra_compress=args.extra_compress,
         )
         for problem_path in problem_paths
     ]
@@ -1134,7 +1121,7 @@ def print_runbook(profile: HamiltonianProfile) -> None:
     print("2. If solve fails, inspect the failed stage logs and add the missing Hamiltonian-derived candidate in train.py.")
     print("3. Keep every tunable rotation as an explicit parameter and count all reference-prep gates.")
     print("4. Re-run solve; only report success when target_status says passed=True.")
-    print("5. After target is reached, optionally use `--extra-compress` to search for simpler tied circuits.")
+    print("5. After target is reached, stop and report the simplest passing row.")
     print()
     print("suggested solve command:")
     print(f"uv run harness.py solve {DEFAULT_PROBLEM} --rel-tol 0.001")
@@ -1193,7 +1180,6 @@ def main() -> int:
     solve_parser.add_argument("--abs-tol", type=float, default=0.0, help="absolute energy tolerance floor")
     solve_parser.add_argument("--max-stages", type=int, default=3, help="number of solve stages to try")
     solve_parser.add_argument("--timeout", type=float, default=None, help="override timeout for each stage")
-    solve_parser.add_argument("--extra-compress", type=int, default=0, help="extra experiments after target is reached")
     solve_parser.add_argument("--output-dir", default=str(SOLVE_DIR))
 
     args = parser.parse_args()

@@ -1,0 +1,36 @@
+{
+  "name": "h2_4q_pennylane_0p6614",
+  "pauli_terms": [
+    { "pauli": "IIII", "coeff": -0.042072551947439224 },
+    { "pauli": "IIIZ", "coeff": 0.1777135822909176 },
+    { "pauli": "IIZI", "coeff": 0.1777135822909176 },
+    { "pauli": "IZII", "coeff": -0.2427450126094144 },
+    { "pauli": "ZIII", "coeff": -0.2427450126094144 },
+    { "pauli": "IZIZ", "coeff": 0.12293330449299361 },
+    { "pauli": "ZIZI", "coeff": 0.12293330449299361 },
+    { "pauli": "ZIIZ", "coeff": 0.16768338855601356 },
+    { "pauli": "IZZI", "coeff": 0.16768338855601356 },
+    { "pauli": "IIZZ", "coeff": 0.17059759276836803 },
+    { "pauli": "ZZII", "coeff": 0.1762766139418181 },
+    { "pauli": "XXYY", "coeff": -0.044750084063019925 },
+    { "pauli": "YYXX", "coeff": -0.044750084063019925 },
+    { "pauli": "YXXY", "coeff": 0.044750084063019925 },
+    { "pauli": "XYYX", "coeff": 0.044750084063019925 }
+  ],
+  "reference_energy": -1.1361891625218792,
+  "reference_note": "PennyLane qchem.molecular_hamiltonian H2 STO-3G coordinates [0,0,-0.6614,0,0,0.6614]. Pauli labels converted to Qiskit big-endian convention.",
+  "basis_gates": [
+    "rx",
+    "ry",
+    "rz",
+    "cx"
+  ],
+  "coupling_map": [
+    [0, 1], [1, 0],
+    [1, 2], [2, 1],
+    [2, 3], [3, 2]
+  ],
+  "initial_state_hint": [
+    1, 1, 0, 0
+  ]
+}

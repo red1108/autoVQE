@@ -5,13 +5,14 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](pyproject.toml)
 [![Qiskit](https://img.shields.io/badge/Qiskit-1.0%2B-6133BD.svg)](pyproject.toml)
 
-AutoVQE is a compact research harness for Hamiltonian-aware variational quantum
-eigensolver experiments. It inspects the operator, proposes structured ansatz
-candidates, optimizes them under a fixed evaluator, and reports whether the raw
-VQE circuit energy reaches the requested tolerance.
+AutoVQE is a Hamiltonian-to-ansatz research tool for variational quantum
+eigensolvers. Given a Pauli Hamiltonian, it inspects operator structure,
+symmetries, locality, coupling constraints, and reference-state hints, then
+proposes and evaluates ansatz candidates that are meant to fit that structure.
 
-The project is built for agentic VQE research: keep the evaluator fixed, make
-one falsifiable ansatz change at a time, and let benchmark evidence decide.
+The point is not to memorize bundled examples. The point is to help a researcher
+answer the hard VQE question: "for this Hamiltonian, what ansatz family should I
+try, and what evidence says it is the right one?"
 
 ## Highlights
 
@@ -19,18 +20,22 @@ one falsifiable ansatz change at a time, and let benchmark evidence decide.
   candidate-family recommendations.
 - Structured ansatz families for U(1) exchange, SU(2)-style Heisenberg HVA,
   TFIM counterdiabatic schedules, Pauli HVA, and shallow HEA baselines.
-- Target-driven solve loop with explicit relative/absolute tolerance checks.
+- Target-driven solve loop with explicit relative/absolute tolerance checks when
+  a reference energy is available.
 - Gate-count and parameter-count reporting after Qiskit transpilation.
-- Reproducible JSON fixtures for H2, TFIM, Heisenberg, weighted spin graphs,
-  and a 16-qubit N2 stress test.
+- Reproducible JSON fixtures that probe different Hamiltonian regimes: small
+  chemistry, TFIM, Heisenberg, weighted spin graphs, and a 16-qubit N2 stress
+  test.
 
 ## Why AutoVQE?
 
-Most VQE demos hard-code a problem and a circuit. AutoVQE keeps the problem file
-and evaluator stable, then searches through Hamiltonian-derived circuit
-families. That makes it easier to compare ideas such as symmetry-preserving
-ansatzes, Hamiltonian variational ansatz layers, or operator-pool candidates
-without mixing them with evaluator changes.
+Most VQE demos hard-code a problem and a circuit. AutoVQE keeps the evaluator
+stable and lets the current Hamiltonian drive candidate design. The system should
+derive decisions from facts such as conserved sectors, Pauli support graph,
+commuting structure, term locality, coefficient scale, reference occupation, and
+hardware connectivity. That makes it easier to compare ideas such as
+symmetry-preserving ansatzes, Hamiltonian variational ansatz layers, and
+operator-pool candidates without writing one-off rules for named benchmarks.
 
 The GitHub root is intentionally short. Runtime code lives under `autovqe/`,
 while docs, fixtures, and community metadata stay in their own directories:
@@ -40,7 +45,7 @@ while docs, fixtures, and community metadata stay in their own directories:
 - `autovqe/train.py` proposes and optimizes ansatz candidates.
 - `autovqe/prepare.py` loads problem JSON files, builds Hamiltonians, computes
   exact references for small systems, and reports compiled gate counts.
-- `examples/` contains named Hamiltonian fixtures.
+- `examples/` contains calibration fixtures for different Hamiltonian regimes.
 - `docs/agent_protocol.md` is the agent protocol for automated research runs.
 - `docs/` contains agent-facing playbooks, benchmark notes, release notes, and
   the roadmap.
@@ -57,8 +62,15 @@ uv run python -m autovqe.harness check
 uv run python -m autovqe.harness solve --rel-tol 0.001
 ```
 
-The default solve target is `examples/h2_2q.json`, a fast sanity-check problem.
-To run the bundled small suite:
+The default solve target is only a fast smoke test. For real use, pass the
+Hamiltonian JSON you want to study:
+
+```bash
+uv run python -m autovqe.harness inspect --problem path/to/problem.json
+uv run python -m autovqe.harness solve path/to/problem.json --rel-tol 0.001
+```
+
+To run the bundled small regression suite:
 
 ```bash
 uv run python -m autovqe.harness solve \
@@ -91,10 +103,10 @@ uv run python -m autovqe.harness inspect --problem examples/ising_1d_5q.json
 # Print a Hamiltonian-aware runbook for the default example.
 uv run python -m autovqe.harness plan
 
-# Run isolated smoke campaigns over the small examples.
+# Run isolated smoke campaigns over calibration fixtures.
 uv run python -m autovqe.harness benchmark
 
-# Include the n=10 hard spin-chain targets.
+# Include larger spin-chain regime probes.
 uv run python -m autovqe.harness benchmark --include-hard
 
 # Run the target-driven solver on a specific problem.
@@ -141,15 +153,19 @@ For method-selection context, read `docs/ansatz_playbook.md`. The intended
 design is that domain knowledge lives in docs until an experiment justifies
 turning it into code.
 
-## Verified Targets
+## Calibration Fixtures
 
-This CI-sized command is expected to pass:
+Fixtures are not the purpose of AutoVQE. They are probes used to keep the
+Hamiltonian-analysis and ansatz-selection logic honest. A change should improve
+general behavior for a class of operators, not special-case a file name.
+
+This small regression command is expected to pass:
 
 ```bash
 uv run python -m autovqe.harness solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
 ```
 
-Representative current results:
+Representative current regression results:
 
 | Problem | Best family | Relative error |
 | --- | --- | --- |
@@ -157,12 +173,18 @@ Representative current results:
 | `h2_4q` | `pauli_hva` | 0.0961% |
 | `ising_1d_5q` | `tfim_counterdiabatic` | 0.0957% |
 
-The harder spin-chain fixtures are `examples/tfim_n10_g1_open.json` and
-`examples/heisenberg_n10_open.json`. They are useful development targets but are
-not promised by the default CI gate because they are intentionally harder and
-more sensitive to stochastic optimizer outcomes than the small sanity-check
-suite. `solve` reports raw circuit VQE energy by default; classical
-post-processing must not be counted as a VQE pass.
+The larger spin-chain and chemistry fixtures are regime probes. For example,
+`examples/tfim_n10_g1_open.json` stresses non-commuting TFIM structure,
+`examples/heisenberg_n10_open.json` stresses symmetry-preserving exchange/HVA
+logic, and `examples/n2_16q_pennylane_sto3g_active14e8o_r2p07416.json` stresses
+large chemistry metadata and U(1)-style sector preservation. If one of these
+fails, the correct response is to inspect the Hamiltonian facts and improve the
+general candidate policy, not to add "if benchmark X, use ansatz Y" logic.
+
+When a reference energy is present, `solve` reports the raw optimized VQE circuit
+energy against that reference. Classical post-processing may be studied
+separately, but it must be labeled separately and must not be presented as the
+VQE circuit result.
 
 Large chemistry fixtures are available as explicit targets, including
 `examples/h2_4q_pennylane_0p6614.json` and

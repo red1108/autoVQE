@@ -1,7 +1,8 @@
 # Contributing
 
-AutoVQE is a small research harness. Contributions should keep the evaluator
-fixed, make candidate behavior measurable, and report raw VQE circuit energy.
+AutoVQE is a Hamiltonian-to-ansatz research tool. Contributions should keep the
+evaluator fixed, derive candidate behavior from the current Hamiltonian, make
+that behavior measurable, and report raw VQE circuit energy.
 
 ## Setup
 
@@ -19,11 +20,11 @@ uv run python -m autovqe.harness check
    ```
 
 2. Read the relevant notes in `docs/`.
-3. Choose one Hamiltonian-derived candidate to test.
+3. Choose one Hamiltonian-derived candidate policy to test.
 
 Do not add benchmark-name special cases. Candidate selection should follow
-operator facts such as locality, support graph, commuting structure, and
-conserved sectors.
+operator facts such as locality, support graph, commuting structure, coefficient
+scale, reference occupation, hardware connectivity, and conserved sectors.
 
 ## Required Checks
 
@@ -44,6 +45,9 @@ uv run python -m autovqe.harness solve examples/tfim_n10_g1_open.json examples/h
 
 For changes that touch chemistry or reference-state logic, run the affected
 chemistry fixture explicitly.
+
+These extra fixtures are probes of general behavior. They are not an invitation
+to tune against file names.
 
 ## Code Style
 

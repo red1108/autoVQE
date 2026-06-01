@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If AutoVQE helps your research, please cite it using this metadata."
+title: "AutoVQE: Hamiltonian-aware VQE research harness"
+version: 0.1.0
+date-released: 2026-05-31
+authors:
+  - name: "red1108"
+repository-code: "https://github.com/red1108/autoVQE"
+url: "https://github.com/red1108/autoVQE"
+license: MIT
+keywords:
+  - VQE
+  - quantum computing
+  - Qiskit
+  - variational algorithms

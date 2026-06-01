@@ -45,6 +45,15 @@ uv run harness.py solve examples/tfim_n10_g1_open.json examples/heisenberg_n10_o
 For changes that touch chemistry or reference-state logic, run the affected
 chemistry fixture explicitly.
 
+## Code Style
+
+- Keep `prepare.py` as the fixed evaluator unless the task explicitly changes
+  the problem format or measurement logic.
+- Put executable candidate circuits and optimizer choices in `train.py`.
+- Keep `harness.py` factual: inspection, isolation, target checks, summaries.
+- Put research rationale in `docs/` before turning it into policy.
+- Prefer small, measured changes over broad ansatz rewrites.
+
 ## Pull Request Notes
 
 Include:
@@ -59,3 +68,9 @@ Include:
 
 Generated files such as `results.tsv`, `run.log`, `benchmark_runs/`, and
 `solve_runs/` should not be committed.
+
+## Community Standards
+
+By participating, you agree to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md). For vulnerability reports, use
+[SECURITY.md](SECURITY.md) instead of public issues.

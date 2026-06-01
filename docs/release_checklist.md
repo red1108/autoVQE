@@ -10,6 +10,9 @@ Use this checklist before tagging or publishing a release.
 - No local agent configuration, virtual environments, caches, or result ledgers
   are tracked.
 - `README.md`, `CONTRIBUTING.md`, and `LICENSE` are present.
+- `CHANGELOG.md`, `ROADMAP.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, and
+  `CITATION.cff` are present.
+- GitHub issue and pull request templates are present.
 
 ## Verification
 

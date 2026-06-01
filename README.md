@@ -1,9 +1,36 @@
 # AutoVQE
 
-AutoVQE is a small research harness for hardware-aware variational quantum
-eigensolver experiments. It keeps the evaluator fixed, measures every candidate
-against a reference energy when one is available, and escalates only when the
-current ansatz has not met the requested tolerance.
+[![CI](https://github.com/red1108/autoVQE/actions/workflows/ci.yml/badge.svg)](https://github.com/red1108/autoVQE/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](pyproject.toml)
+[![Qiskit](https://img.shields.io/badge/Qiskit-1.0%2B-6133BD.svg)](pyproject.toml)
+
+AutoVQE is a compact research harness for Hamiltonian-aware variational quantum
+eigensolver experiments. It inspects the operator, proposes structured ansatz
+candidates, optimizes them under a fixed evaluator, and reports whether the raw
+VQE circuit energy reaches the requested tolerance.
+
+The project is built for agentic VQE research: keep the evaluator fixed, make
+one falsifiable ansatz change at a time, and let benchmark evidence decide.
+
+## Highlights
+
+- Hamiltonian inspection for locality, support graph, Pauli structure, and
+  candidate-family recommendations.
+- Structured ansatz families for U(1) exchange, SU(2)-style Heisenberg HVA,
+  TFIM counterdiabatic schedules, Pauli HVA, and shallow HEA baselines.
+- Target-driven solve loop with explicit relative/absolute tolerance checks.
+- Gate-count and parameter-count reporting after Qiskit transpilation.
+- Reproducible JSON fixtures for H2, TFIM, Heisenberg, weighted spin graphs,
+  and a 16-qubit N2 stress test.
+
+## Why AutoVQE?
+
+Most VQE demos hard-code a problem and a circuit. AutoVQE keeps the problem file
+and evaluator stable, then searches through Hamiltonian-derived circuit
+families. That makes it easier to compare ideas such as symmetry-preserving
+ansatzes, Hamiltonian variational ansatz layers, or operator-pool candidates
+without mixing them with evaluator changes.
 
 The project is intentionally script-first:
 
@@ -18,6 +45,8 @@ The project is intentionally script-first:
 - `CONTRIBUTING.md` describes the checks expected before a pull request.
 
 ## Quick Start
+
+Install [`uv`](https://docs.astral.sh/uv/) first, then run:
 
 ```bash
 uv sync
@@ -40,6 +69,14 @@ uv run harness.py solve \
 
 ```text
 abs(best_energy - reference_energy) <= max(abs_tol, rel_tol * abs(reference_energy))
+```
+
+Example output:
+
+```text
+target_status: passed=True gap=0.000908030202 threshold=0.001857275030 rel_error=0.048890%
+solve_rollup:
+- examples/h2_2q.json: passed=True ... family=pauli_hva stage=smoke
 ```
 
 ## CLI
@@ -103,12 +140,24 @@ turning it into code.
 
 ## Verified Targets
 
-These commands are expected to pass on the current release candidate:
+These commands are expected to pass:
 
 ```bash
 uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
 uv run harness.py solve examples/tfim_n10_g1_open.json examples/heisenberg_n10_open.json --rel-tol 0.001 --max-stages 2
 ```
+
+Representative current results:
+
+| Problem | Best family | Relative error |
+| --- | --- | --- |
+| `h2_2q` | `pauli_hva` | 0.0489% |
+| `h2_4q` | `pauli_hva` | 0.0961% |
+| `ising_1d_5q` | `tfim_counterdiabatic` | 0.0957% |
+| `tfim_n10_g1_open` | `tfim_counterdiabatic` | 0.1000% |
+| `heisenberg_n10_open` | `heisenberg_hva` | 0.0998% |
+| `ising_1d_9q` | `heisenberg_hva` | 0.0998% |
+| `n2_16q` | `u1_exchange` | 0.0388% |
 
 The harder spin-chain fixtures are `examples/tfim_n10_g1_open.json` and
 `examples/heisenberg_n10_open.json`. They are useful development targets but are
@@ -130,6 +179,20 @@ uv run harness.py check
 uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
 git diff --check
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for PR expectations and
+[docs/release_checklist.md](docs/release_checklist.md) for release checks.
+
+## Project Status
+
+AutoVQE is an alpha research tool. The CLI and problem JSON format are small
+and usable, but internals may change as new benchmark evidence lands. See
+[ROADMAP.md](ROADMAP.md) and [CHANGELOG.md](CHANGELOG.md) for current direction.
+
+## Citation
+
+If AutoVQE helps your research, cite the repository using
+[CITATION.cff](CITATION.cff).
 
 ## License
 

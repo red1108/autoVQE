@@ -1,0 +1,26 @@
+name: Benchmark request
+description: Request or propose a new Hamiltonian fixture.
+title: "[Benchmark]: "
+labels: ["benchmark"]
+body:
+  - type: textarea
+    id: hamiltonian
+    attributes:
+      label: Hamiltonian
+      description: Describe the Hamiltonian, mapping, geometry, and basis if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: reference
+    attributes:
+      label: Reference energy
+      description: How should the reference energy be generated and verified?
+    validations:
+      required: true
+  - type: textarea
+    id: reason
+    attributes:
+      label: Why it belongs in AutoVQE
+      description: Explain what ansatz or symmetry behavior this benchmark tests.
+    validations:
+      required: true

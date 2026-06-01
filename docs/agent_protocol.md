@@ -7,12 +7,12 @@ are proved by the harness.
 
 ## File Contract
 
-- `prepare.py`: fixed evaluator. Do not edit it during ordinary research.
-- `harness.py`: control plane. It inspects operators, runs isolated campaigns,
-  checks targets, and reports evidence.
-- `train.py`: experiment surface. Put candidate circuits, schedules, and
+- `autovqe/prepare.py`: fixed evaluator. Do not edit it during ordinary research.
+- `autovqe/harness.py`: control plane. It inspects operators, runs isolated
+  campaigns, checks targets, and reports evidence.
+- `autovqe/train.py`: experiment surface. Put candidate circuits, schedules, and
   optimizers here.
-- `program.md`: operating protocol. Keep it method-agnostic and problem-agnostic.
+- `docs/agent_protocol.md`: operating protocol. Keep it method-agnostic and problem-agnostic.
 - `docs/`: background material. It may inform a hypothesis, but it is not a
   substitute for inspecting the current operator.
 - `examples/`: fixtures. Do not edit the active fixture during a run unless the
@@ -22,8 +22,8 @@ are proved by the harness.
 
 ```bash
 git status --short --branch
-uv run harness.py inspect --problem <problem.json>
-uv run harness.py check
+uv run python -m autovqe.harness inspect --problem <problem.json>
+uv run python -m autovqe.harness check
 ```
 
 Use `inspect` output as evidence. Problem names, file names, and prior results
@@ -44,8 +44,8 @@ authoritative inputs.
 Useful commands:
 
 ```bash
-uv run harness.py campaign --mode smoke --experiments 8 --experiment-seconds 2 --max-evals 60
-uv run harness.py solve <problem.json> --rel-tol <target>
+uv run python -m autovqe.harness campaign --mode smoke --experiments 8 --experiment-seconds 2 --max-evals 60
+uv run python -m autovqe.harness solve <problem.json> --rel-tol <target>
 ```
 
 ## General Rules
@@ -83,9 +83,9 @@ as a control, not as the explanation.
 Before reporting success, run checks that match the scope of the change:
 
 ```bash
-uv run python -m py_compile harness.py train.py prepare.py
-uv run harness.py check
-uv run harness.py solve <problem.json> --rel-tol <target>
+uv run python -m py_compile autovqe/prepare.py autovqe/train.py autovqe/harness.py
+uv run python -m autovqe.harness check
+uv run python -m autovqe.harness solve <problem.json> --rel-tol <target>
 git diff --check
 ```
 

@@ -12,7 +12,7 @@ from collections import Counter, defaultdict, deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import prepare
+from . import prepare
 
 
 RESULTS_PATH = Path("results.tsv")
@@ -573,7 +573,7 @@ def run_train(
     started = time.perf_counter()
     with log_path.open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
-            [sys.executable, "train.py"],
+            [sys.executable, "-m", "autovqe.train"],
             stdout=log,
             stderr=subprocess.STDOUT,
             env=env,
@@ -586,11 +586,11 @@ def run_train(
             return_code = process.wait()
             elapsed = time.perf_counter() - started
             log.write(f"\n[harness] timeout after {elapsed:.1f}s; process killed\n")
-            print(f"timeout: killed train.py after {elapsed:.1f}s")
+            print(f"timeout: killed autovqe.train after {elapsed:.1f}s")
             return return_code if return_code != 0 else 124
 
     elapsed = time.perf_counter() - started
-    print(f"train.py exited code={return_code} elapsed={elapsed:.1f}s log={log_path}")
+    print(f"autovqe.train exited code={return_code} elapsed={elapsed:.1f}s log={log_path}")
     return return_code
 
 
@@ -660,7 +660,7 @@ def recommend_next_action(
         if incumbent is not None:
             print(f"- Full-budget incumbent remains: {format_row(incumbent)}")
         print("- Suggested promotion command:")
-        print("  AUTOVQE_MAX_EXPERIMENTS=12 uv run harness.py campaign --mode full --experiments 12")
+        print("  AUTOVQE_MAX_EXPERIMENTS=12 uv run python -m autovqe.harness campaign --mode full --experiments 12")
         return
 
     if incumbent is None or best_new.energy < incumbent.energy:
@@ -684,7 +684,7 @@ def check(condition: bool, message: str) -> None:
 
 
 def run_self_check(with_smoke: bool = False) -> int:
-    for path in ["prepare.py", "train.py", "harness.py"]:
+    for path in ["autovqe/prepare.py", "autovqe/train.py", "autovqe/harness.py"]:
         py_compile.compile(path, doraise=True)
     check(True, "python files compile")
 
@@ -693,7 +693,7 @@ def run_self_check(with_smoke: bool = False) -> int:
     check(profile.simplified_terms > 0, "problem has simplified Hamiltonian terms")
     check(bool(profile.candidates), "Hamiltonian audit produced ansatz candidates")
 
-    import train
+    from . import train
 
     problem = prepare.load_problem()
     backend = prepare.build_backend_target(problem)
@@ -818,7 +818,7 @@ def run_campaign(args: argparse.Namespace) -> int:
 
     if args.dry_run:
         print(f"dry_run_env: {extra_env}")
-        print(f"dry_run_command: {sys.executable} train.py")
+        print(f"dry_run_command: {sys.executable} -m autovqe.train")
         return 0
 
     return_code = run_train(timeout_seconds=timeout, log_path=Path(args.log), extra_env=extra_env)
@@ -1117,23 +1117,23 @@ def run_solve(args: argparse.Namespace) -> int:
 
 def print_runbook(profile: HamiltonianProfile) -> None:
     print("runbook:")
-    print("1. Run `uv run harness.py solve <problem-file> --rel-tol <target>` when the target is known.")
-    print("2. If solve fails, inspect the failed stage logs and add the missing Hamiltonian-derived candidate in train.py.")
+    print("1. Run `uv run python -m autovqe.harness solve <problem-file> --rel-tol <target>` when the target is known.")
+    print("2. If solve fails, inspect the failed stage logs and add the missing Hamiltonian-derived candidate in autovqe/train.py.")
     print("3. Keep every tunable rotation as an explicit parameter and count all reference-prep gates.")
     print("4. Re-run solve; only report success when target_status says passed=True.")
     print("5. After target is reached, stop and report the simplest passing row.")
     print()
     print("suggested solve command:")
-    print(f"uv run harness.py solve {DEFAULT_PROBLEM} --rel-tol 0.001")
+    print(f"uv run python -m autovqe.harness solve {DEFAULT_PROBLEM} --rel-tol 0.001")
     print()
     print("manual smoke command:")
     print(
         "AUTOVQE_MAX_EXPERIMENTS=6 AUTOVQE_EXPERIMENT_SECONDS=2 "
-        "AUTOVQE_MAX_EVALS=40 uv run harness.py run --timeout 90"
+        "AUTOVQE_MAX_EVALS=40 uv run python -m autovqe.harness run --timeout 90"
     )
     print()
     print("suggested full command:")
-    print(f"uv run harness.py run --timeout {int(profile.time_budget_seconds * 120 + 60)}")
+    print(f"uv run python -m autovqe.harness run --timeout {int(profile.time_budget_seconds * 120 + 60)}")
 
 
 def main() -> int:
@@ -1150,7 +1150,7 @@ def main() -> int:
     check_parser = subparsers.add_parser("check", help="run fast harness self-checks")
     check_parser.add_argument("--with-smoke", action="store_true", help="run one smoke experiment and restore results.tsv")
 
-    run_parser = subparsers.add_parser("run", help="run train.py with a wall-clock timeout")
+    run_parser = subparsers.add_parser("run", help="run autovqe.train with a wall-clock timeout")
     run_parser.add_argument("--timeout", type=float, default=600.0)
     run_parser.add_argument("--log", default=str(RUN_LOG_PATH))
 

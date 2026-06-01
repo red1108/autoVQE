@@ -21,7 +21,7 @@ These should stay fast and reliable:
 Expected command:
 
 ```bash
-uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
+uv run python -m autovqe.harness solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
 ```
 
 ## Hard Spin-Chain Targets

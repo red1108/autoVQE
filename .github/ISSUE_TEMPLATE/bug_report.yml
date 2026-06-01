@@ -16,7 +16,7 @@ body:
       label: Reproduction
       description: Include the exact command and problem file.
       placeholder: |
-        uv run harness.py solve examples/h2_2q.json --rel-tol 0.001
+        uv run python -m autovqe.harness solve examples/h2_2q.json --rel-tol 0.001
     validations:
       required: true
   - type: textarea

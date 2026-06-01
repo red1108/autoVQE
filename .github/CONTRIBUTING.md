@@ -7,7 +7,7 @@ fixed, make candidate behavior measurable, and report raw VQE circuit energy.
 
 ```bash
 uv sync
-uv run harness.py check
+uv run python -m autovqe.harness check
 ```
 
 ## Before Changing Code
@@ -15,7 +15,7 @@ uv run harness.py check
 1. Inspect the target Hamiltonian.
 
    ```bash
-   uv run harness.py inspect --problem <problem.json>
+   uv run python -m autovqe.harness inspect --problem <problem.json>
    ```
 
 2. Read the relevant notes in `docs/`.
@@ -30,16 +30,16 @@ conserved sectors.
 Run these before opening a pull request:
 
 ```bash
-uv run python -m py_compile prepare.py train.py harness.py
-uv run harness.py check
-uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
+uv run python -m py_compile autovqe/prepare.py autovqe/train.py autovqe/harness.py
+uv run python -m autovqe.harness check
+uv run python -m autovqe.harness solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
 git diff --check
 ```
 
 For changes that touch spin-chain ansatz logic, also run:
 
 ```bash
-uv run harness.py solve examples/tfim_n10_g1_open.json examples/heisenberg_n10_open.json --rel-tol 0.001 --max-stages 2
+uv run python -m autovqe.harness solve examples/tfim_n10_g1_open.json examples/heisenberg_n10_open.json --rel-tol 0.001 --max-stages 2
 ```
 
 For changes that touch chemistry or reference-state logic, run the affected
@@ -47,10 +47,10 @@ chemistry fixture explicitly.
 
 ## Code Style
 
-- Keep `prepare.py` as the fixed evaluator unless the task explicitly changes
+- Keep `autovqe/prepare.py` as the fixed evaluator unless the task explicitly changes
   the problem format or measurement logic.
-- Put executable candidate circuits and optimizer choices in `train.py`.
-- Keep `harness.py` factual: inspection, isolation, target checks, summaries.
+- Put executable candidate circuits and optimizer choices in `autovqe/train.py`.
+- Keep `autovqe/harness.py` factual: inspection, isolation, target checks, summaries.
 - Put research rationale in `docs/` before turning it into policy.
 - Prefer small, measured changes over broad ansatz rewrites.
 

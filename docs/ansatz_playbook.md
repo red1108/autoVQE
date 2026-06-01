@@ -5,7 +5,7 @@ chooses one experiment.
 
 ## Audit Checklist
 
-Before editing `train.py`, answer:
+Before editing `autovqe/train.py`, answer:
 
 - What is the max Pauli locality?
 - Is the Hamiltonian Z-only, TFIM-like, Heisenberg-like, chemistry-like, or

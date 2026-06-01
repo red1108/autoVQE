@@ -32,17 +32,20 @@ families. That makes it easier to compare ideas such as symmetry-preserving
 ansatzes, Hamiltonian variational ansatz layers, or operator-pool candidates
 without mixing them with evaluator changes.
 
-The project is intentionally script-first:
+The GitHub root is intentionally short. Runtime code lives under `autovqe/`,
+while docs, fixtures, and community metadata stay in their own directories:
 
-- `harness.py` is the public CLI for inspection, benchmark runs, and target
-  solving.
-- `train.py` proposes and optimizes ansatz candidates.
-- `prepare.py` loads problem JSON files, builds Hamiltonians, computes exact
-  references for small systems, and reports compiled gate counts.
+- `autovqe/harness.py` is the public CLI for inspection, benchmark runs, and
+  target solving.
+- `autovqe/train.py` proposes and optimizes ansatz candidates.
+- `autovqe/prepare.py` loads problem JSON files, builds Hamiltonians, computes
+  exact references for small systems, and reports compiled gate counts.
 - `examples/` contains named Hamiltonian fixtures.
-- `program.md` is the agent protocol for automated research runs.
-- `docs/` contains agent-facing playbooks and benchmark notes.
-- `CONTRIBUTING.md` describes the checks expected before a pull request.
+- `docs/agent_protocol.md` is the agent protocol for automated research runs.
+- `docs/` contains agent-facing playbooks, benchmark notes, release notes, and
+  the roadmap.
+- `.github/` contains CI, templates, contributing guidance, security policy,
+  citation metadata, and the code of conduct.
 
 ## Quick Start
 
@@ -50,15 +53,15 @@ Install [`uv`](https://docs.astral.sh/uv/) first, then run:
 
 ```bash
 uv sync
-uv run harness.py check
-uv run harness.py solve --rel-tol 0.001
+uv run python -m autovqe.harness check
+uv run python -m autovqe.harness solve --rel-tol 0.001
 ```
 
 The default solve target is `examples/h2_2q.json`, a fast sanity-check problem.
 To run the bundled small suite:
 
 ```bash
-uv run harness.py solve \
+uv run python -m autovqe.harness solve \
   examples/h2_2q.json \
   examples/h2_4q.json \
   examples/ising_1d_5q.json \
@@ -83,19 +86,19 @@ solve_rollup:
 
 ```bash
 # Inspect Hamiltonian structure and recommended ansatz families.
-uv run harness.py inspect --problem examples/ising_1d_5q.json
+uv run python -m autovqe.harness inspect --problem examples/ising_1d_5q.json
 
 # Print a Hamiltonian-aware runbook for the default example.
-uv run harness.py plan
+uv run python -m autovqe.harness plan
 
 # Run isolated smoke campaigns over the small examples.
-uv run harness.py benchmark
+uv run python -m autovqe.harness benchmark
 
 # Include the n=10 hard spin-chain targets.
-uv run harness.py benchmark --include-hard
+uv run python -m autovqe.harness benchmark --include-hard
 
 # Run the target-driven solver on a specific problem.
-uv run harness.py solve examples/ising_1d_5q.json --rel-tol 0.001
+uv run python -m autovqe.harness solve examples/ising_1d_5q.json --rel-tol 0.001
 ```
 
 Generated experiment files such as `results.tsv`, `run.log`,
@@ -140,11 +143,10 @@ turning it into code.
 
 ## Verified Targets
 
-These commands are expected to pass:
+This CI-sized command is expected to pass:
 
 ```bash
-uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
-uv run harness.py solve examples/tfim_n10_g1_open.json examples/heisenberg_n10_open.json --rel-tol 0.001 --max-stages 2
+uv run python -m autovqe.harness solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
 ```
 
 Representative current results:
@@ -154,16 +156,13 @@ Representative current results:
 | `h2_2q` | `pauli_hva` | 0.0489% |
 | `h2_4q` | `pauli_hva` | 0.0961% |
 | `ising_1d_5q` | `tfim_counterdiabatic` | 0.0957% |
-| `tfim_n10_g1_open` | `tfim_counterdiabatic` | 0.1000% |
-| `heisenberg_n10_open` | `heisenberg_hva` | 0.0998% |
-| `ising_1d_9q` | `heisenberg_hva` | 0.0998% |
-| `n2_16q` | `u1_exchange` | 0.0388% |
 
 The harder spin-chain fixtures are `examples/tfim_n10_g1_open.json` and
 `examples/heisenberg_n10_open.json`. They are useful development targets but are
-not part of the default CI gate because they are intentionally harder than the
-small sanity-check suite. `solve` reports raw circuit VQE energy by default;
-classical post-processing must not be counted as a VQE pass.
+not promised by the default CI gate because they are intentionally harder and
+more sensitive to stochastic optimizer outcomes than the small sanity-check
+suite. `solve` reports raw circuit VQE energy by default; classical
+post-processing must not be counted as a VQE pass.
 
 Large chemistry fixtures are available as explicit targets, including
 `examples/h2_4q_pennylane_0p6614.json` and
@@ -174,25 +173,26 @@ stress test.
 ## Development Checks
 
 ```bash
-uv run python -m py_compile harness.py train.py prepare.py
-uv run harness.py check
-uv run harness.py solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
+uv run python -m py_compile autovqe/prepare.py autovqe/train.py autovqe/harness.py
+uv run python -m autovqe.harness check
+uv run python -m autovqe.harness solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
 git diff --check
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for PR expectations and
+See [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for PR expectations and
 [docs/release_checklist.md](docs/release_checklist.md) for release checks.
 
 ## Project Status
 
 AutoVQE is an alpha research tool. The CLI and problem JSON format are small
 and usable, but internals may change as new benchmark evidence lands. See
-[ROADMAP.md](ROADMAP.md) and [CHANGELOG.md](CHANGELOG.md) for current direction.
+[docs/roadmap.md](docs/roadmap.md) and [docs/changelog.md](docs/changelog.md)
+for current direction.
 
 ## Citation
 
 If AutoVQE helps your research, cite the repository using
-[CITATION.cff](CITATION.cff).
+[.github/CITATION.cff](.github/CITATION.cff).
 
 ## License
 

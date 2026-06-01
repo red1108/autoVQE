@@ -13,7 +13,7 @@ from qiskit.circuit.library import XXPlusYYGate
 from qiskit.circuit import ParameterVector, QuantumCircuit
 from scipy.optimize import dual_annealing, minimize
 
-import prepare
+from . import prepare
 
 
 DEFAULT_PROBLEM_PATH = "examples/h2_2q.json"

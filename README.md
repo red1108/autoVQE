@@ -8,11 +8,11 @@
 AutoVQE is a Hamiltonian-to-ansatz research tool for variational quantum
 eigensolvers. Given a Pauli Hamiltonian, it inspects operator structure,
 symmetries, locality, coupling constraints, and reference-state hints, then
-proposes and evaluates ansatz candidates that are meant to fit that structure.
+proposes ansatz candidates that fit those facts.
 
-The point is not to memorize bundled examples. The point is to help a researcher
-answer the hard VQE question: "for this Hamiltonian, what ansatz family should I
-try, and what evidence says it is the right one?"
+It is not built to memorize bundled examples. It is meant to help a researcher
+answer the actual VQE design question: for this Hamiltonian, which ansatz family
+should I try, and what evidence supports that choice?
 
 ## Highlights
 
@@ -35,19 +35,19 @@ derive decisions from facts such as conserved sectors, Pauli support graph,
 commuting structure, term locality, coefficient scale, reference occupation, and
 hardware connectivity. That makes it easier to compare ideas such as
 symmetry-preserving ansatzes, Hamiltonian variational ansatz layers, and
-operator-pool candidates without writing one-off rules for named benchmarks.
+operator-pool candidates without writing one-off rules for named fixtures.
 
 The GitHub root is intentionally short. Runtime code lives under `autovqe/`,
 while docs, fixtures, and community metadata stay in their own directories:
 
-- `autovqe/harness.py` is the public CLI for inspection, benchmark runs, and
-  target solving.
+- `autovqe/harness.py` is the public CLI for inspection, calibration runs, and
+  tolerance checks.
 - `autovqe/train.py` proposes and optimizes ansatz candidates.
 - `autovqe/prepare.py` loads problem JSON files, builds Hamiltonians, computes
   exact references for small systems, and reports compiled gate counts.
 - `examples/` contains calibration fixtures for different Hamiltonian regimes.
 - `docs/agent_protocol.md` is the agent protocol for automated research runs.
-- `docs/` contains agent-facing playbooks, benchmark notes, release notes, and
+- `docs/` contains agent-facing playbooks, calibration notes, release notes, and
   the roadmap.
 - `.github/` contains CI, templates, contributing guidance, security policy,
   citation metadata, and the code of conduct.
@@ -176,21 +176,16 @@ Representative current regression results:
 The larger spin-chain and chemistry fixtures are regime probes. For example,
 `examples/tfim_n10_g1_open.json` stresses non-commuting TFIM structure,
 `examples/heisenberg_n10_open.json` stresses symmetry-preserving exchange/HVA
-logic, and `examples/n2_16q_pennylane_sto3g_active14e8o_r2p07416.json` stresses
-large chemistry metadata and U(1)-style sector preservation. If one of these
-fails, the correct response is to inspect the Hamiltonian facts and improve the
-general candidate policy, not to add "if benchmark X, use ansatz Y" logic.
+logic, `examples/h2_4q_pennylane_0p6614.json` checks a small chemistry mapping,
+and `examples/n2_16q_pennylane_sto3g_active14e8o_r2p07416.json` stresses large
+chemistry metadata and U(1)-style sector preservation. If one of these fails,
+the correct response is to inspect the Hamiltonian facts and improve the general
+candidate policy, not to add "if fixture X, use ansatz Y" logic.
 
 When a reference energy is present, `solve` reports the raw optimized VQE circuit
 energy against that reference. Classical post-processing may be studied
 separately, but it must be labeled separately and must not be presented as the
 VQE circuit result.
-
-Large chemistry fixtures are available as explicit targets, including
-`examples/h2_4q_pennylane_0p6614.json` and
-`examples/n2_16q_pennylane_sto3g_active14e8o_r2p07416.json`. The N2 fixture is
-kept out of default benchmark commands because it is a 16-qubit, 1281-term
-stress test.
 
 ## Development Checks
 
@@ -207,9 +202,9 @@ See [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for PR expectations and
 ## Project Status
 
 AutoVQE is an alpha research tool. The CLI and problem JSON format are small
-and usable, but internals may change as new benchmark evidence lands. See
-[docs/roadmap.md](docs/roadmap.md) and [docs/changelog.md](docs/changelog.md)
-for current direction.
+and usable, but internals may change as new Hamiltonian-regime evidence lands.
+See [docs/roadmap.md](docs/roadmap.md) and
+[docs/changelog.md](docs/changelog.md) for current direction.
 
 ## Citation
 

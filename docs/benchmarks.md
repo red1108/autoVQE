@@ -1,8 +1,8 @@
 # Calibration Fixtures
 
-AutoVQE is not a benchmark-fitting repo. These fixtures exist to make ansatz
-selection research falsifiable across different Hamiltonian regimes. Each
-problem should have:
+These fixtures are not the goal of AutoVQE. They exist to make ansatz-selection
+research falsifiable across different Hamiltonian regimes. Each problem should
+have:
 
 - a named Hamiltonian,
 - explicit Pauli terms,
@@ -40,8 +40,8 @@ These probe structural cases that matter for a general ansatz-selection tool:
 | `examples/heisenberg_n10_open.json` | exchange structure; U(1)/SU(2)-motivated symmetry-preserving candidates |
 | `examples/ising_1d_9q.json` | weighted support graph stress case |
 
-They are intentionally useful when developing general Hamiltonian policies. Do
-not convert them into "if this file, use that circuit" branches.
+Use these probes when developing general Hamiltonian policies. Do not convert
+them into "if this file, use that circuit" branches.
 
 ## Large Chemistry Regime Probes
 

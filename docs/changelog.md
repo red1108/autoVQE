@@ -9,7 +9,7 @@ semantic versioning while the public API is still small.
 
 ### Added
 
-- Public CLI for Hamiltonian inspection, benchmark campaigns, and target-driven
+- Public CLI for Hamiltonian inspection, calibration campaigns, and target-driven
   solving.
 - JSON problem fixtures for H2, TFIM, Heisenberg, weighted spin graphs, and a
   16-qubit N2 stress test.
@@ -19,17 +19,20 @@ semantic versioning while the public API is still small.
   - TFIM counterdiabatic schedules,
   - Pauli term-evolution HVA,
   - shallow HEA baselines.
-- Documentation for ansatz selection, benchmarks, releases, and contribution
-  workflow.
+- Documentation for ansatz selection, calibration fixtures, releases, and
+  contribution workflow.
 - CI checks for compile, harness self-check, and the small solve suite.
 
 ### Changed
 
-- Benchmark pass criteria now use raw circuit VQE energy only.
+- Reported solve criteria now use raw circuit VQE energy only.
 - Single shared-angle Hamiltonian evolution is treated as ineligible.
 
 ### Verified
 
-- Small suite: H2 2q, H2 4q, Ising 5q.
-- Hard spin-chain targets: TFIM n10, Heisenberg n10.
-- Optional long targets: weighted Heisenberg 9q and N2 16q.
+- Small regression suite: H2 2q, H2 4q, Ising 5q.
+
+### Included Regime Probes
+
+- Spin-chain probes: TFIM n10, Heisenberg n10, weighted Heisenberg 9q.
+- Chemistry probes: PennyLane H2 4q and N2 16q active-space stress test.

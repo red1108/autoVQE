@@ -40,6 +40,7 @@ Record:
 
 - supported Python version,
 - dependency versions from `uv.lock`,
-- benchmark commands and pass/fail status,
-- any benchmarks intentionally excluded from CI because of runtime,
+- calibration commands and observed status,
+- any larger regime probes left outside required CI because of runtime or run
+  budget,
 - known limitations.

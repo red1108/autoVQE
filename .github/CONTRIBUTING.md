@@ -22,7 +22,7 @@ uv run python -m autovqe.harness check
 2. Read the relevant notes in `docs/`.
 3. Choose one Hamiltonian-derived candidate policy to test.
 
-Do not add benchmark-name special cases. Candidate selection should follow
+Do not add fixture-name special cases. Candidate selection should follow
 operator facts such as locality, support graph, commuting structure, coefficient
 scale, reference occupation, hardware connectivity, and conserved sectors.
 
@@ -54,7 +54,8 @@ to tune against file names.
 - Keep `autovqe/prepare.py` as the fixed evaluator unless the task explicitly changes
   the problem format or measurement logic.
 - Put executable candidate circuits and optimizer choices in `autovqe/train.py`.
-- Keep `autovqe/harness.py` factual: inspection, isolation, target checks, summaries.
+- Keep `autovqe/harness.py` factual: inspection, isolation, tolerance checks,
+  summaries.
 - Put research rationale in `docs/` before turning it into policy.
 - Prefer small, measured changes over broad ansatz rewrites.
 

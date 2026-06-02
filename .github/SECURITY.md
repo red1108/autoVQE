@@ -32,6 +32,6 @@ In scope:
 
 Out of scope:
 
-- inaccurate benchmark energies caused by user-supplied Hamiltonian data,
+- inaccurate reference energies caused by user-supplied Hamiltonian data,
 - quantum algorithm performance limitations,
 - intentionally long-running optimization workloads.

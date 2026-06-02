@@ -6,10 +6,10 @@ experiments easier to reproduce and compare.
 ## Near Term
 
 - Add reproducible chemistry generation scripts for H6 and BeH2 fixtures.
-- Add a compact result-summary exporter for benchmark tables.
+- Add a compact exporter for run summaries and calibration tables.
 - Add focused tests for candidate eligibility and symmetry-preserving circuit
   construction.
-- Improve optimizer warm starts without hard-coding benchmark-specific angles.
+- Improve optimizer warm starts without hard-coding fixture-specific angles.
 
 ## Research Directions
 
@@ -22,5 +22,5 @@ experiments easier to reproduce and compare.
 ## Non-Goals
 
 - Hiding exact diagonalization inside an ansatz.
-- Treating classical post-processing as a VQE benchmark pass.
+- Treating classical post-processing as the VQE circuit result.
 - Growing a large framework before the small harness has earned it.

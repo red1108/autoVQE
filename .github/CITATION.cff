@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If AutoVQE helps your research, please cite it using this metadata."
-title: "AutoVQE: Hamiltonian-aware VQE research harness"
+title: "AutoVQE: Hamiltonian-to-ansatz VQE research tool"
 version: 0.1.0
 date-released: 2026-05-31
 authors:

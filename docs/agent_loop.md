@@ -18,12 +18,13 @@ only when the evidence improves.
 | --- | --- | --- |
 | Evaluator | `autovqe/prepare.py` | Load Hamiltonians, compute references, measure energy and compiled gate counts. |
 | Experiment surface | `autovqe/train.py` | Build candidate circuits and optimize parameters. This is the main editable file. |
-| Harness | `autovqe/harness.py` | Inspect Hamiltonians, isolate runs, compare against targets, summarize evidence. |
+| Harness | `autovqe/harness.py` | Inspect Hamiltonians, isolate runs, compare against references and tolerances, summarize evidence. |
 | Protocol | `docs/agent_protocol.md` | Short operating contract for agents. |
-| Knowledge base | `docs/` | Ansatz decision rules, benchmark notes, source links, and future research ideas. |
+| Knowledge base | `docs/` | Ansatz decision rules, calibration notes, source links, and future research ideas. |
 
 Keep the harness factual. It should answer "what does this Hamiltonian look
-like?" and "did this run pass?" Avoid turning it into a large expert system.
+like?" and "what evidence did this run produce?" Avoid turning it into a large
+expert system.
 When a method is domain knowledge rather than executable measurement, put it in
 `docs/`.
 
@@ -35,14 +36,14 @@ When a method is domain knowledge rather than executable measurement, put it in
 4. Add or adjust one candidate in `autovqe/train.py`.
 5. Run a small campaign.
 6. If it wins, run `solve`.
-7. Keep the edit only if the target check or ledger proves improvement.
+7. Keep the edit only if the tolerance check or ledger proves improvement.
 
 ## What To Avoid
 
 - Do not add dataclasses that only restate prose.
 - Do not encode every possible ansatz as `if/else` policy in `autovqe/harness.py`.
-- Do not count classical post-processing as a VQE pass. Raw circuit energy is
-  the benchmark result.
+- Do not count classical post-processing as the VQE result. Raw circuit energy is
+  the reported solve result.
 - Do not let generated experiment folders accumulate in the repo root.
 - Do not broaden the search before the Hamiltonian-derived family has received
   a fair smoke test.

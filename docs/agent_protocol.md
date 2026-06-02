@@ -1,7 +1,7 @@
 # AutoVQE Agent Protocol
 
 This repo is an autoresearch-style VQE lab. The protocol is deliberately
-general: do not map a problem name to a memorized ansatz. Inspect the operator,
+general: do not map a fixture name to a memorized ansatz. Inspect the operator,
 extract constraints, propose a measured candidate, and keep only changes that
 are proved by the harness.
 
@@ -9,7 +9,7 @@ are proved by the harness.
 
 - `autovqe/prepare.py`: fixed evaluator. Do not edit it during ordinary research.
 - `autovqe/harness.py`: control plane. It inspects operators, runs isolated
-  campaigns, checks targets, and reports evidence.
+  campaigns, checks references and tolerances, and reports evidence.
 - `autovqe/train.py`: experiment surface. Put candidate circuits, schedules, and
   optimizers here.
 - `docs/agent_protocol.md`: operating protocol. Keep it method-agnostic and problem-agnostic.
@@ -39,7 +39,7 @@ authoritative inputs.
    circuit.
 4. Run a bounded smoke campaign.
 5. Promote only if the ledger shows a real energy or resource improvement.
-6. Run target `solve` before reporting success.
+6. Run `solve` against the requested tolerance before reporting success.
 
 Useful commands:
 
@@ -52,7 +52,7 @@ uv run python -m autovqe.harness solve <problem.json> --rel-tol <target>
 
 - Preserve any detected invariant unless deliberately running a baseline.
 - If a reference state is used, prepare it with gates inside the circuit.
-- A candidate is not valid just because it reaches the target; it must expose a
+- A candidate is not valid just because it reaches a tolerance; it must expose a
   real variational search space and respect the stated constraints.
 - Do not collapse a Hamiltonian-derived circuit into one global scalar knob and
   call it a solved ansatz.
@@ -66,7 +66,7 @@ uv run python -m autovqe.harness solve <problem.json> --rel-tol <target>
 
 ## Candidate Design
 
-Do not write "if this benchmark, use that ansatz" rules here. Instead, derive
+Do not write "if this fixture, use that ansatz" rules here. Instead, derive
 candidate families from general operator facts:
 
 - conserved quantities imply sector-preserving moves,
@@ -89,7 +89,7 @@ uv run python -m autovqe.harness solve <problem.json> --rel-tol <target>
 git diff --check
 ```
 
-For broad changes, run every affected fixture explicitly. For a single target,
-the target solve plus the fixed checks are sufficient. In the final report,
-include the command, best energy, reference energy, gap, tolerance, ansatz
-family, parameter count, and gate counts.
+For broad changes, run every affected fixture explicitly. For one requested
+Hamiltonian, the matching `solve` run plus the fixed checks are sufficient. In
+the final report, include the command, best energy, reference energy, gap,
+tolerance, ansatz family, parameter count, and gate counts.

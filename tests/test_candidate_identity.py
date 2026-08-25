@@ -11,7 +11,7 @@ from autovqe.contracts import (
     ReferenceSpec,
     SectorSpec,
 )
-from autovqe.evaluator import EvaluationProtocol, candidate_hash, evaluate_public_problem
+from autovqe.evaluator import EvaluationProtocol, candidate_identity, evaluate_public_problem
 
 
 def _spec() -> dict:
@@ -48,7 +48,7 @@ def _spec() -> dict:
 
 
 class CandidateIdentityTests(unittest.TestCase):
-    def test_cosmetic_and_alpha_renaming_changes_share_one_hash(self) -> None:
+    def test_cosmetic_and_alpha_renaming_changes_share_one_identity(self) -> None:
         original = _spec()
         renamed = copy.deepcopy(original)
         renamed["name"] = "presentation_b"
@@ -60,7 +60,7 @@ class CandidateIdentityTests(unittest.TestCase):
         renamed["layers"][0]["operations"][1]["parameters"]["angle"][
             "parameter"
         ] = "alpha"
-        self.assertEqual(candidate_hash(original), candidate_hash(renamed))
+        self.assertEqual(candidate_identity(original), candidate_identity(renamed))
 
         problem = PublicProblem.create(
             num_qubits=2,
@@ -76,20 +76,20 @@ class CandidateIdentityTests(unittest.TestCase):
         self.assertEqual(first.energy_trace, second.energy_trace)
         self.assertEqual(first.metrics, second.metrics)
 
-    def test_physical_operation_order_changes_the_hash(self) -> None:
+    def test_physical_operation_order_changes_the_identity(self) -> None:
         original = _spec()
         original["layers"][0]["operations"][1]["qubits"] = [0]
         reordered = copy.deepcopy(original)
         reordered["layers"][0]["operations"].reverse()
-        self.assertNotEqual(candidate_hash(original), candidate_hash(reordered))
+        self.assertNotEqual(candidate_identity(original), candidate_identity(reordered))
 
-    def test_parameter_sharing_changes_the_hash(self) -> None:
+    def test_parameter_sharing_changes_the_identity(self) -> None:
         original = _spec()
         shared = copy.deepcopy(original)
         shared["parameters"] = ["shared"]
         for operation in shared["layers"][0]["operations"]:
             operation["parameters"]["angle"]["parameter"] = "shared"
-        self.assertNotEqual(candidate_hash(original), candidate_hash(shared))
+        self.assertNotEqual(candidate_identity(original), candidate_identity(shared))
 
 
 if __name__ == "__main__":

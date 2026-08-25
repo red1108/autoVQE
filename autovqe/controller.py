@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import math
 import re
@@ -14,7 +13,7 @@ from .compiler import compile_ansatz
 from .contracts import PublicProblem, assert_agent_safe
 from .evaluator import (
     EvaluationProtocol,
-    candidate_hash,
+    candidate_identity,
     evaluate_public_problem,
     hamiltonian_from_public,
 )
@@ -51,7 +50,7 @@ MAX_CANONICAL_DEPTH = 1024
 MAX_ACTIVE_HYPOTHESES = 3
 MAX_ACTIVE_CANDIDATES_PER_HYPOTHESIS = 2
 MAX_EXTERNAL_ACTION_BYTES = 1_000_000
-MAX_LEDGER_EVENTS = 200
+MAX_HISTORY_EVENTS = 200
 MIN_SMOKE_ENERGY_IMPROVEMENT = 1e-6
 
 EXACT_SYMMETRY_CLAIM = "exact_pauli_symmetry"
@@ -63,7 +62,6 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 @dataclass(frozen=True)
 class ControllerReceipt:
     action_type: str
-    generated_event_hashes: tuple[str, ...]
     result: dict[str, Any]
     state: dict[str, Any]
 
@@ -137,8 +135,7 @@ def _required_probe_ids(claim: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _admission_probe_id(hypothesis_id: str) -> str:
-    digest = hashlib.sha256(hypothesis_id.encode("utf-8")).hexdigest()[:24]
-    return f"controller_admission:{digest}"
+    return f"admission:{hypothesis_id}"
 
 
 def _resource_eligibility(metrics: Mapping[str, Any]) -> dict[str, Any]:
@@ -190,7 +187,7 @@ def _resource_eligibility(metrics: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class ResearchController:
-    """Trusted bridge between untrusted agent actions and evaluator receipts.
+    """Validate agent actions and run evaluator-owned measurements.
 
     External agents can request probes and evaluations, but cannot append
     ``record_probe`` or ``record_evaluation`` events themselves.
@@ -199,12 +196,12 @@ class ResearchController:
     def __init__(
         self,
         problem: PublicProblem,
-        ledger: str | Path,
+        history: str | Path,
         *,
         total_budget: float = 100.0,
     ):
         self.problem = problem
-        self.loop = ResearchLoop(ledger, total_budget=total_budget)
+        self.loop = ResearchLoop(history, total_budget=total_budget)
 
     @property
     def state(self) -> ResearchState:
@@ -218,7 +215,6 @@ class ResearchController:
     ) -> ControllerReceipt:
         return ControllerReceipt(
             action_type=action_type,
-            generated_event_hashes=tuple(event.event_hash for event in events),
             result=copy.deepcopy(dict(result)),
             state=self.loop.state.to_dict(),
         )
@@ -232,10 +228,10 @@ class ResearchController:
     ) -> None:
         state = self.loop.state
         terminal_reserve = 0 if terminal else 1
-        if state.last_seq + 1 + events + terminal_reserve > MAX_LEDGER_EVENTS:
+        if state.last_seq + 1 + events + terminal_reserve > MAX_HISTORY_EVENTS:
             detail = "" if terminal else " while reserving one terminal-decision event"
             raise ControllerError(
-                f"research run reached {MAX_LEDGER_EVENTS} event cap{detail}"
+                f"research run reached {MAX_HISTORY_EVENTS} event cap{detail}"
             )
         if cost > state.remaining_budget + 1e-12:
             raise ControllerError(
@@ -352,19 +348,18 @@ class ResearchController:
             },
         )
 
-    def _unique_candidate_hash(self, spec: Mapping[str, Any]) -> str:
-        digest = candidate_hash(spec)
+    def _ensure_unique_candidate(self, spec: Mapping[str, Any]) -> None:
+        identity = candidate_identity(spec)
         duplicates = sorted(
             record.candidate_id
             for record in self.loop.state.candidates.values()
-            if candidate_hash(record.spec) == digest
+            if candidate_identity(record.spec) == identity
         )
         if duplicates:
             raise ControllerError(
                 "candidate is semantically equivalent to an existing candidate; "
                 f"cosmetic renaming/re-layering is not a new experiment: {duplicates}"
             )
-        return digest
 
     def _submit_candidate(self, action: Mapping[str, Any]) -> ControllerReceipt:
         _strict_action(
@@ -378,7 +373,7 @@ class ResearchController:
         if hypothesis is None:
             raise ControllerError(f"unknown hypothesis: {hypothesis_id}")
         spec = _mapping(action["spec"], "spec")
-        semantic_hash = self._unique_candidate_hash(spec)
+        self._ensure_unique_candidate(spec)
         metadata = _mapping(action.get("metadata", {}), "metadata")
         expected_enforcement = {
             EXACT_SYMMETRY_CLAIM: "preserve",
@@ -423,7 +418,7 @@ class ResearchController:
         return self._receipt(
             "submit_candidate",
             [event],
-            {"accepted": True, "candidate_hash": semantic_hash},
+            {"accepted": True},
         )
 
     def _revise(self, action: Mapping[str, Any]) -> ControllerReceipt:
@@ -443,7 +438,6 @@ class ResearchController:
 
         auto_admit = False
         capacity_checked = False
-        semantic_hash: str | None = None
         if entity == "hypothesis":
             source = self.loop.state.hypotheses.get(source_id)
             if source is None:
@@ -499,7 +493,7 @@ class ResearchController:
                     "promotable candidate revision must preregister a new non-empty "
                     "prediction or falsifier in metadata"
                 )
-            semantic_hash = self._unique_candidate_hash(replacement)
+            self._ensure_unique_candidate(replacement)
             active = sum(
                 record.hypothesis_id == source.hypothesis_id
                 and record.status not in {Lifecycle.REVISED, Lifecycle.RETIRED}
@@ -539,11 +533,6 @@ class ResearchController:
             {
                 "accepted": True,
                 "auto_admitted": auto_admit,
-                **(
-                    {"candidate_hash": semantic_hash}
-                    if semantic_hash is not None
-                    else {}
-                ),
             },
         )
 
@@ -779,7 +768,7 @@ class ResearchController:
                 f"external action exceeds {MAX_EXTERNAL_ACTION_BYTES} byte cap"
             )
         if self.loop.state.terminal:
-            raise ControllerError("research campaign is terminal; no further actions are allowed")
+            raise ControllerError("research run is terminal; no further actions are allowed")
         action_type = action.get("type")
         if not isinstance(action_type, str):
             raise ControllerError("external action requires a string type")
@@ -1038,7 +1027,6 @@ class ResearchController:
                     "reference_variance": reference_variance,
                 }
             metrics = {
-                "candidate_hash": candidate_hash(candidate.spec),
                 "audit": compiled.audit.to_dict(),
                 "valid": True,
             }
@@ -1047,7 +1035,6 @@ class ResearchController:
             return True, metrics
         except Exception as exc:
             return False, {
-                "candidate_hash": candidate_hash(candidate.spec),
                 "valid": False,
                 "violations": [f"{type(exc).__name__}: {exc}"],
             }

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
@@ -73,7 +72,6 @@ class EvaluationProtocol:
 
 @dataclass(frozen=True)
 class EvaluationReceipt:
-    candidate_hash: str
     valid: bool
     best_energy: float | None
     energy_trace: tuple[float, ...]
@@ -92,9 +90,9 @@ class EvaluationReceipt:
 
 @dataclass(frozen=True)
 class PrivateEvaluationResult:
-    """Evaluator-internal circuit state accompanying an authenticated receipt.
+    """Evaluator-internal circuit state accompanying measured results.
 
-    The optimized scalar binding is deliberately copied into the receipt so a
+    The optimized scalar binding is deliberately copied into the result so a
     terminal result can be reproduced without trusting agent-authored values.
     The compiled circuit remains evaluator-internal.
     """
@@ -134,7 +132,7 @@ def _same_rotation_generator(left: Any, right: Any) -> bool:
 def _coalesced_rotations(parsed: AnsatzSpec) -> tuple[Any, ...]:
     """Collapse adjacent exponentials of the same trusted generator.
 
-    Layer boundaries are already presentation-only in the semantic hash.  For
+    Layer boundaries are already presentation-only in the semantic identity.  For
     the three trusted one-parameter exponential macros, consecutive equal
     generators also satisfy ``exp(-iaG) exp(-ibG) = exp(-i(a+b)G)``.  Folding
     them prevents split/cancel submissions from obtaining a fresh evaluator
@@ -186,7 +184,7 @@ def _canonical_spec(spec: AnsatzSpec | Mapping[str, Any]) -> dict[str, Any]:
     """Return an alpha-normalized, presentation-independent ansatz family.
 
     Candidate names, layer labels/boundaries, parameter spelling, and
-    declaration order do not change the physical variational family.  Hashing
+    declaration order do not change the physical variational family.  Including
     those fields would let an agent obtain fresh evaluator generic bindings by
     resubmitting the same circuit with cosmetic edits.
     """
@@ -234,7 +232,7 @@ def _canonical_spec(spec: AnsatzSpec | Mapping[str, Any]) -> dict[str, Any]:
         )
 
     return {
-        "semantic_hash_version": 1,
+        "semantic_identity_version": 1,
         "version": parsed.version,
         "num_qubits": parsed.num_qubits,
         "parameter_count": len(incidence),
@@ -243,20 +241,24 @@ def _canonical_spec(spec: AnsatzSpec | Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def candidate_hash(spec: AnsatzSpec | Mapping[str, Any]) -> str:
+def candidate_identity(spec: AnsatzSpec | Mapping[str, Any]) -> str:
+    """Return canonical text for semantic duplicate detection and sampling."""
+
     try:
         canonical = _canonical_spec(spec)
-        domain = b"autovqe-semantic-candidate-v1\0"
+        prefix = "valid:"
     except (TypeError, ValueError, KeyError):
-        # Invalid submissions still need a stable identifier in a negative
-        # audit receipt. They cannot be evaluated or deduplicated as a legal
-        # physical family, so use a separately domain-tagged raw representation.
+        # Invalid submissions still need a stable internal identity. They
+        # cannot be evaluated or deduplicated as a legal physical family, so
+        # keep them in a separate namespace from compiled candidates.
         canonical = dict(spec) if isinstance(spec, Mapping) else spec.to_dict()
-        domain = b"autovqe-invalid-candidate-v1\0"
-    encoded = domain + json.dumps(
-        canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+        prefix = "invalid:"
+    return prefix + json.dumps(
+        canonical,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
 
 
 def hamiltonian_from_public(problem: PublicProblem) -> SparsePauliOp:
@@ -516,14 +518,15 @@ def _prefix_metrics(prefix: str, metrics: Mapping[str, int]) -> dict[str, int]:
     return {f"{prefix}_{key}": int(value) for key, value in metrics.items()}
 
 
-def _generic_rng(candidate_digest: str, evaluator_seed: int) -> np.random.Generator:
+def _generic_rng(candidate_identity_value: str, evaluator_seed: int) -> np.random.Generator:
     """Return a deterministic, candidate-specific RNG for resource probes."""
 
-    material = f"autovqe-generic-bindings-v1:{evaluator_seed}:{candidate_digest}".encode(
+    material = f"autovqe-generic-bindings-v1:{evaluator_seed}:{candidate_identity_value}".encode(
         "ascii"
     )
-    seed = int.from_bytes(hashlib.sha256(material).digest()[:16], "big")
-    return np.random.default_rng(seed)
+    padding = (-len(material)) % 4
+    entropy = np.frombuffer(material + (b"\0" * padding), dtype=np.uint32)
+    return np.random.default_rng(np.random.SeedSequence(entropy))
 
 
 def _worst_metrics(samples: list[Mapping[str, int]]) -> dict[str, int]:
@@ -547,7 +550,7 @@ def evaluate_ansatz(
 
     selected_protocol = protocol or EvaluationProtocol()
     selected_protocol.validate()
-    digest = candidate_hash(spec)
+    identity = candidate_identity(spec)
     try:
         hamiltonian = _validate_hamiltonian(hamiltonian)
         # Compilation consults only the trusted macro registry.  Both the
@@ -573,7 +576,7 @@ def evaluate_ansatz(
             optimization_level=selected_protocol.transpile_optimization_level,
         )
 
-        generic_rng = _generic_rng(digest, selected_protocol.seed)
+        generic_rng = _generic_rng(identity, selected_protocol.seed)
         generic_samples = []
         canonical_generic_samples = []
         for _ in range(selected_protocol.generic_binding_count):
@@ -632,7 +635,6 @@ def evaluate_ansatz(
             "generic_binding_count": selected_protocol.generic_binding_count,
         }
         receipt = EvaluationReceipt(
-            candidate_hash=digest,
             valid=True,
             best_energy=min(raw_trace),
             energy_trace=tuple(raw_trace),
@@ -654,7 +656,6 @@ def evaluate_ansatz(
         )
     except Exception as exc:
         receipt = EvaluationReceipt(
-            candidate_hash=digest,
             valid=False,
             best_energy=None,
             energy_trace=(),

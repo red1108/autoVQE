@@ -16,7 +16,6 @@ from .contracts import (
     SCHEMA_VERSION,
     SectorSpec,
     assert_agent_safe,
-    canonical_hash,
     canonical_json,
 )
 
@@ -158,9 +157,10 @@ def public_problem_from_prepare(
     reference: ReferenceSpec | None = None,
     backend: BackendSpec | None = None,
 ) -> PublicProblem:
-    """Create the deterministic public view of ``prepare.Problem``."""
+    """Create the public view of ``prepare.Problem``."""
 
     return PublicProblem.create(
+        problem_id=str(problem.name).strip() or "unnamed_problem",
         num_qubits=problem.num_qubits,
         pauli_terms=_public_pauli_terms(problem),
         encoding=encoding or encoding_from_prepare(problem),
@@ -255,8 +255,6 @@ class ObservationBundle:
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if not self.public_problem.has_valid_problem_id():
-            raise ValueError("public problem content does not match problem_id")
         assert_agent_safe(self)
 
     @property
@@ -268,11 +266,6 @@ class ObservationBundle:
     def to_canonical_json(self) -> str:
         assert_agent_safe(self)
         return canonical_json(self)
-
-    def content_hash(self) -> str:
-        assert_agent_safe(self)
-        return canonical_hash(self)
-
 
 def observation_bundle_from_prepare(
     problem: "Problem",

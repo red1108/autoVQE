@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Union
 
-from .ledger import GENESIS_HASH, JsonlEventLedger, LedgerEvent, LedgerIntegrityError
+from .history import HistoryIntegrityError, JsonlRunHistory, RunEvent
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -29,7 +29,7 @@ class TransitionError(ResearchError):
 
 
 class BudgetExceeded(ResearchError):
-    """Raised when an action would overspend the campaign budget."""
+    """Raised when an action would overspend the run budget."""
 
 
 class Lifecycle(str, Enum):
@@ -564,7 +564,6 @@ class ResearchState:
     negative_close_evidence_ids: tuple[str, ...] = ()
     negative_close_metadata: dict[str, Any] = field(default_factory=dict)
     last_seq: int = -1
-    last_hash: str = GENESIS_HASH
 
     def __post_init__(self) -> None:
         self.total_budget = _validated_cost(self.total_budget)
@@ -607,7 +606,6 @@ class ResearchState:
             "negative_close_metadata": copy.deepcopy(self.negative_close_metadata),
             "terminal_decision": self.terminal_decision,
             "last_seq": self.last_seq,
-            "last_hash": self.last_hash,
             "hypotheses": {
                 key: {
                     "hypothesis_id": item.hypothesis_id,
@@ -956,7 +954,7 @@ def apply_action(state: ResearchState, action_like: ResearchAction | Mapping[str
 
     action = parse_action(action_like)
     if state.terminal:
-        raise TransitionError("campaign is terminal; no further actions are allowed")
+        raise TransitionError("research run is terminal; no further actions are allowed")
     projected = state.spent_budget + action.cost
     if projected > state.total_budget + 1e-12:
         raise BudgetExceeded(
@@ -986,67 +984,73 @@ def apply_action(state: ResearchState, action_like: ResearchAction | Mapping[str
     return next_state
 
 
-def _action_from_event(event: LedgerEvent) -> ResearchAction:
-    # LedgerEvent intentionally freezes nested mappings.  Its record view is
+def _action_from_event(event: RunEvent) -> ResearchAction:
+    # RunEvent intentionally freezes nested mappings. Its record view is
     # the detached JSON representation expected by the action parser.
     payload = event.to_record()["payload"]
     raw = {"type": event.event_type, "cost": event.cost, **payload}
     return parse_action(raw)
 
 
-def replay_events(events: Iterable[LedgerEvent], *, total_budget: float) -> ResearchState:
+def replay_events(events: Iterable[RunEvent], *, total_budget: float) -> ResearchState:
     """Rebuild state from an already parsed event sequence."""
 
     state = ResearchState(total_budget=total_budget)
     expected_seq = 0
-    expected_prev = GENESIS_HASH
     for event in events:
-        if event.seq != expected_seq or event.prev_hash != expected_prev:
-            raise LedgerIntegrityError(
-                f"invalid replay chain at seq {event.seq}: expected seq={expected_seq} "
-                f"prev_hash={expected_prev}"
+        if event.seq != expected_seq:
+            raise HistoryIntegrityError(
+                f"invalid replay sequence at event {event.seq}: "
+                f"expected seq={expected_seq}"
             )
         state = apply_action(state, _action_from_event(event))
         state.last_seq = event.seq
-        state.last_hash = event.event_hash
         expected_seq += 1
-        expected_prev = event.event_hash
     return state
 
 
-def replay_ledger(ledger: JsonlEventLedger, *, total_budget: float) -> ResearchState:
-    return replay_events(ledger.verify(), total_budget=total_budget)
+def replay_history(history: JsonlRunHistory, *, total_budget: float) -> ResearchState:
+    return replay_events(history.read_events(), total_budget=total_budget)
 
 
 class ResearchLoop:
     """A small event-sourced controller suitable for scripted or external agents."""
 
-    def __init__(self, ledger: JsonlEventLedger | str | Path, *, total_budget: float):
-        self.ledger = ledger if isinstance(ledger, JsonlEventLedger) else JsonlEventLedger(ledger)
-        self._state = replay_ledger(self.ledger, total_budget=total_budget)
+    def __init__(
+        self,
+        history: JsonlRunHistory | str | Path,
+        *,
+        total_budget: float,
+    ):
+        self.history = (
+            history if isinstance(history, JsonlRunHistory) else JsonlRunHistory(history)
+        )
+        self._state = replay_history(self.history, total_budget=total_budget)
 
     @property
     def state(self) -> ResearchState:
         return copy.deepcopy(self._state)
 
-    def dispatch(self, action_like: ResearchAction | Mapping[str, Any]) -> LedgerEvent:
+    def dispatch(self, action_like: ResearchAction | Mapping[str, Any]) -> RunEvent:
         action = parse_action(action_like)
-        current_events = self.ledger.verify()
-        current_tip = current_events[-1].event_hash if current_events else GENESIS_HASH
-        if len(current_events) != self._state.last_seq + 1 or current_tip != self._state.last_hash:
-            raise LedgerIntegrityError("ledger changed since this ResearchLoop was opened")
+        current_events = self.history.read_events()
+        current_state = replay_events(current_events, total_budget=self._state.total_budget)
+        if current_state.to_dict() != self._state.to_dict():
+            raise HistoryIntegrityError(
+                "research history changed since this ResearchLoop was opened"
+            )
 
         next_state = apply_action(self._state, action)
-        event = self.ledger.append(
+        expected_seq = self._state.last_seq + 1
+        event = self.history.append(
             _action_type(action).value,
             _event_payload(action),
             cost=action.cost,
+            expected_seq=expected_seq,
         )
-        expected_seq = self._state.last_seq + 1
-        if event.seq != expected_seq or event.prev_hash != self._state.last_hash:
-            raise LedgerIntegrityError("ledger tip changed during dispatch")
+        if event.seq != expected_seq:
+            raise HistoryIntegrityError("history sequence changed during dispatch")
         next_state.last_seq = event.seq
-        next_state.last_hash = event.event_hash
         self._state = next_state
         return event
 
@@ -1088,5 +1092,5 @@ __all__ = [
     "apply_action",
     "parse_action",
     "replay_events",
-    "replay_ledger",
+    "replay_history",
 ]

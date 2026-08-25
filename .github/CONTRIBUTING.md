@@ -1,8 +1,8 @@
 # Contributing
 
-AutoVQE is a Hamiltonian-to-ansatz research tool. Contributions should keep the
-evaluator fixed, derive candidate behavior from the current Hamiltonian, make
-that behavior measurable, and report raw VQE circuit energy.
+AutoVQE is a Hamiltonian-to-ansatz research tool. Contributions should derive
+candidate behavior from the supplied Hamiltonian, make each claim measurable,
+and keep energy and resource values evaluator-owned.
 
 ## Setup
 
@@ -11,70 +11,66 @@ uv sync
 uv run python -m autovqe.harness check
 ```
 
-## Before Changing Code
+## Before changing code
 
-1. Inspect the target Hamiltonian.
+1. Inspect the relevant Hamiltonian.
 
    ```bash
    uv run python -m autovqe.harness inspect --problem <problem.json>
    ```
 
-2. Read the relevant notes in `docs/`.
-3. Choose one Hamiltonian-derived candidate policy to test.
+2. Read the action protocol and ansatz playbook.
+3. State the physical or workflow invariant the change should preserve.
+4. Identify tests that distinguish the intended behavior from misuse.
 
-Do not add fixture-name special cases. Candidate selection should follow
-operator facts such as locality, support graph, commuting structure, coefficient
-scale, reference occupation, hardware connectivity, and conserved sectors.
+Do not add file-name special cases or fixed answers. Candidate policy should
+follow observable facts such as locality, support graph, commuting structure,
+coefficient scale, reference occupation, hardware connectivity, and conserved
+sectors.
 
-## Required Checks
+## Required checks
 
 Run these before opening a pull request:
 
 ```bash
-uv run python -m py_compile autovqe/prepare.py autovqe/train.py autovqe/harness.py
+uv run python -m compileall -q autovqe tests
+uv run python -m unittest discover -s tests -v
 uv run python -m autovqe.harness check
-uv run python -m autovqe.harness solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
 git diff --check
 ```
 
-For changes that touch spin-chain ansatz logic, also run:
+Run focused unit tests for any changed compiler, operation, probe, evaluator,
+controller, lifecycle, or CLI behavior. Larger Hamiltonians may be exercised
+as optional calibration inputs when the change affects that physical regime.
 
-```bash
-uv run python -m autovqe.harness solve examples/tfim_n10_g1_open.json examples/heisenberg_n10_open.json --rel-tol 0.001 --max-stages 2
-```
+## Design guidelines
 
-For changes that touch chemistry or reference-state logic, run the affected
-chemistry fixture explicitly.
+- Keep Hamiltonian parsing and public observations mechanical.
+- Represent circuits with `AnsatzSpec`; do not accept opaque executable code.
+- Add an operation only with a physical generator, identity-at-zero behavior,
+  applicability rules, resource accounting, limits, and misuse tests.
+- Keep optimizer policy and reported measurements outside candidate metadata.
+- Count parameter occurrences as well as unique parameter names.
+- Check resource use at generic nonzero bindings when numeric simplification
+  could hide cost.
+- Preserve failed and retired research branches.
+- Prefer one measured policy change over a broad circuit rewrite.
 
-These extra fixtures are probes of general behavior. They are not an invitation
-to tune against file names.
-
-## Code Style
-
-- Keep `autovqe/prepare.py` as the fixed evaluator unless the task explicitly changes
-  the problem format or measurement logic.
-- Put executable candidate circuits and optimizer choices in `autovqe/train.py`.
-- Keep `autovqe/harness.py` factual: inspection, isolation, tolerance checks,
-  summaries.
-- Put research rationale in `docs/` before turning it into policy.
-- Prefer small, measured changes over broad ansatz rewrites.
-
-## Pull Request Notes
+## Pull request notes
 
 Include:
 
-- the problem file,
-- best energy and reference energy,
-- relative error,
-- ansatz family,
-- parameter count,
-- two-qubit gate count,
-- command used to verify the result.
+- the scientific or workflow problem being addressed;
+- the observable rule used by the implementation;
+- affected action, candidate, or evaluation behavior;
+- evaluator-derived energy and resource results when relevant;
+- tests run;
+- limitations and unsupported regimes.
 
-Generated files such as `results.tsv`, `run.log`, `benchmark_runs/`, and
-`solve_runs/` should not be committed.
+Do not commit `.autovqe-runtime/`, local action scratch files, virtual
+environments, caches, or private reference answers.
 
-## Community Standards
+## Community standards
 
 By participating, you agree to follow the
 [Code of Conduct](CODE_OF_CONDUCT.md). For vulnerability reports, use

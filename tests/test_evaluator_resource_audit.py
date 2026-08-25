@@ -104,7 +104,22 @@ class EvaluatorResourceAuditTests(unittest.TestCase):
         )
 
         self.assertTrue(first.receipt.valid, first.receipt.violations)
-        self.assertEqual(first.receipt.candidate_hash, second.receipt.candidate_hash)
+        self.assertEqual(
+            set(first.receipt.to_dict()),
+            {
+                "valid",
+                "best_energy",
+                "energy_trace",
+                "best_energy_trace",
+                "objective_calls",
+                "optimizer",
+                "seed",
+                "optimized_parameter_binding",
+                "audit",
+                "metrics",
+                "violations",
+            },
+        )
         self.assertEqual(first.receipt.metrics, second.receipt.metrics)
 
 

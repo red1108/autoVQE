@@ -1,8 +1,8 @@
 # Ansatz Playbook
 
 Use this playbook to form and test hypotheses, not to assign an ansatz label
-from a Hamiltonian pattern. The safe observation contains evidence; a trusted
-probe receipt determines whether one particular claim is supported.
+from a Hamiltonian pattern. The mechanical observation contains evidence; an
+evaluator-produced probe result determines whether one particular claim is supported.
 
 ## Start from observations
 
@@ -22,7 +22,7 @@ with its explicit `qubits` list. For example, `qubits: [0, 1]` with local
 `pauli: "XY"` means X on q0 and Y on q1, whose full Qiskit label is `YX`.
 Other `EncodingSpec.qubit_order` values are rejected rather than guessed.
 
-Do not use a fixture name, a legacy `model_class`, a recommendation, an exact
+Do not use a fixture name, a `model_class` label, a recommendation, an exact
 reference energy/state, or previous learned angles as evidence. A declared
 sector is a claim supplied with the problem, not proof that every Hamiltonian
 term, reference, or proposed circuit preserves it.
@@ -43,7 +43,7 @@ opaque Qiskit instructions, duplicate/out-of-range qubits, and unsupported
 options are rejected. Public backend basis names are lowering/accounting
 targets only; they never expand this macro allowlist.
 
-The registry is closed but not narrow enough to be a complete search policy.
+The allowlist is closed but not narrow enough to be a complete search policy.
 The controller caps a candidate at 256 logical operations, 128 unique
 parameters, 4096 IR nodes, and fan-out 64 for any one parameter. A
 `PauliRotation` above locality two must exactly match a declared Hamiltonian
@@ -98,7 +98,7 @@ introduced when no hint exists.
 
 `XYExchange` and `IsotropicExchange` are conditionally available: the parent
 must be a controller-`SUPPORTED` `exact_pauli_symmetry` hypothesis, and every
-operation must still pass the charge-commutator audit. Their registry entries
+operation must still pass the charge-commutator audit. Their allowlist entries
 and conservation-suggestive names are implementation availability, not
 physical evidence. Auto-admitted structure/control claims cannot authorize
 them.
@@ -198,7 +198,7 @@ For lattice gauge, point-group, translation, permutation, or other constraint
 structure, document the hypothesis but do not claim dedicated enforcement. The
 generic `preserve` audit can cover an exactly encoded Pauli-sum charge, but
 Gauss-law-specific moves, group projection/twirling, orbit parameter tying, and
-non-Abelian symmetry-adapted blocks are not in the current registry.
+non-Abelian symmetry-adapted blocks are not in the current allowlist.
 
 ## Minimal candidate example
 
@@ -253,7 +253,7 @@ candidate that may be committed.
 
 The current stage sequence is:
 
-1. `audit`: typed compile plus fixed-literal/provenance policy;
+1. `audit`: typed compile plus fixed-literal policy;
 2. `smoke`: fixed COBYLA protocol with up to 32 calls, one restart, seed 7;
 3. `promotion`: fixed COBYLA protocol with up to 96 calls, three restarts, seed
    997.
@@ -280,7 +280,7 @@ local gates is not proof of:
 - closeness to an exact reference energy.
 
 Record those limitations in the candidate metadata/final report. Do not infer
-more than the receipt establishes.
+more than the recorded evaluation establishes.
 
 A passed promotion cannot be revised or retired: it remains live until an
 evidence-gated commit, and therefore prevents `close_negative`. Commit cites
@@ -288,20 +288,9 @@ the promotion plus an evaluated competitor/control or a documented
 non-dominance basis. This preserves a successful result instead of erasing it
 to manufacture a negative terminal.
 
-For evidence provenance, `research step` and `research status` require sealed
-mode by default. In that mode the evaluator-owned
-`autovqe-<run_id>.events.jsonl` is authoritative and the run-directory
-`events.jsonl` is only a verified mirror; do not treat edits to the mirror as
-new evidence. A run initialized without `--sealed` is development-only, and
-both later commands must explicitly use `--allow-unsealed`.
-
-## Legacy families
-
-The older `train.py`/`solve` path still contains U(1) exchange, Heisenberg HVA,
-TFIM/counterdiabatic, Pauli-HVA, and shallow hardware-efficient families. They
-are compatibility implementations, not automatically available typed macros.
-Human-facing `inspect` recommendations belong to that legacy path and are
-absent from `inspect --agent-json`.
+Use `research status` to review branch evidence and `research result` only
+after a terminal decision. Do not treat edits to local run files as new
+scientific evidence.
 
 ## Planned additions
 
@@ -323,5 +312,5 @@ claim.
 - Hamiltonian variational ansatz: https://arxiv.org/abs/1507.08969
 - QAOA: https://arxiv.org/abs/1411.4028
 - ADAPT-VQE: https://arxiv.org/abs/1812.11173
-- Qubit-excitation ADAPT-VQE benchmark context:
+- Qubit-excitation ADAPT-VQE study:
   https://www.nature.com/articles/s42005-021-00730-0

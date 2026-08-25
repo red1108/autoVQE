@@ -16,7 +16,7 @@ body:
       label: Reproduction
       description: Include the exact command and problem file.
       placeholder: |
-        uv run python -m autovqe.harness solve examples/h2_2q.json --rel-tol 0.001
+        uv run python -m autovqe.harness inspect --problem examples/h2_2q.json
     validations:
       required: true
   - type: textarea
@@ -30,6 +30,6 @@ body:
     id: version
     attributes:
       label: Version
-      description: Commit SHA or release version.
+      description: Commit or release version.
     validations:
       required: false

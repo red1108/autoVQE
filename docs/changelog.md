@@ -1,38 +1,32 @@
 # Changelog
 
-All notable changes to AutoVQE are recorded here.
+Notable AutoVQE changes are recorded here. The project follows semantic
+versioning while its public interface is still evolving.
 
-The format follows the spirit of Keep a Changelog, and the project uses
-semantic versioning while the public API is still small.
-
-## [0.1.0] - 2026-05-31
+## Unreleased
 
 ### Added
 
-- Public CLI for Hamiltonian inspection, calibration campaigns, and target-driven
-  solving.
-- JSON problem fixtures for H2, TFIM, Heisenberg, weighted spin graphs, and a
-  16-qubit N2 stress test.
-- Hamiltonian-aware candidate families:
-  - U(1) exchange layers,
-  - SU(2)-style Heisenberg HVA,
-  - TFIM counterdiabatic schedules,
-  - Pauli term-evolution HVA,
-  - shallow HEA baselines.
-- Documentation for ansatz selection, calibration fixtures, releases, and
-  contribution workflow.
-- CI checks for compile, harness self-check, and the small solve suite.
+- Typed `AnsatzSpec` candidates with strict affine parameter expressions.
+- A small operation allowlist with conditional symmetry-preserving exchanges.
+- Exact commutator evidence and reference-sector checks.
+- Evaluator-owned energy, optimized parameter, and resource measurements.
+- Closed hypothesis, probe, candidate, audit, smoke, promotion, and terminal
+  decision lifecycle.
+- Local `research init`, `step`, `status`, and `result` commands.
+- Semantic duplicate detection and generic-binding resource checks.
 
 ### Changed
 
-- Reported solve criteria now use raw circuit VQE energy only.
-- Single shared-angle Hamiltonian evolution is treated as ineligible.
+- Public documentation now focuses on the scientific research workflow.
+- Generated run state is kept under `.autovqe-runtime/`.
+- Positive decisions are described as local promotions unless an independent
+  reference evaluation is reported separately.
 
-### Verified
+## 0.1.0 - 2026-05-31
 
-- Small regression suite: H2 2q, H2 4q, Ising 5q.
+### Added
 
-### Included Regime Probes
-
-- Spin-chain probes: TFIM n10, Heisenberg n10, weighted Heisenberg 9q.
-- Chemistry probes: PennyLane H2 4q and N2 16q active-space stress test.
+- Pauli-Hamiltonian loading and mechanical inspection.
+- Initial VQE optimization and hardware-aware circuit measurement.
+- Calibration inputs covering molecular and spin-system regimes.

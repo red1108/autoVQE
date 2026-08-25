@@ -95,7 +95,7 @@ class FixedLiteral:
 
 @dataclass(frozen=True)
 class AnsatzAudit:
-    """Resource and provenance receipt derived by the trusted compiler."""
+    """Parameter and resource audit derived by the compiler."""
 
     unique_trainable_params: int
     trainable_parameter_names: tuple[str, ...]

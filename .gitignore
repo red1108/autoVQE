@@ -10,29 +10,15 @@
 /htmlcov/
 *.egg-info/
 
-# Legacy harness outputs
-/results.tsv
-/run.log
-/benchmark_*/
-/solve_runs*/
-/research_run*/
-
-# Generated research, agent, and evaluator runs.
+# Local AutoVQE runs
 /.autovqe-runtime/
-/meta_agent_run*/
-/meta_agent_logs/
 
-# Local secrets are never repository artifacts. Production evaluator secrets
-# belong in an OS secret store outside the Codex workspace, not merely here.
+# Local environment files
 /.env
 /.env.*
 !/.env.example
-/.secrets/
-*.secret
-*.key
 
-# Codex client-local configuration is personal state; tracked prompts live in
-# /meta_agent instead.
+# Personal Codex configuration
 /.codex/
 
 # Operating-system files

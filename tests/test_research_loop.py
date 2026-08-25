@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from autovqe.ledger import GENESIS_HASH, JsonlEventLedger, LedgerIntegrityError
+from autovqe.history import HistoryIntegrityError, JsonlRunHistory
 from autovqe.research import (
     ActionParseError,
     BudgetExceeded,
@@ -13,7 +13,7 @@ from autovqe.research import (
     ResearchLoop,
     TransitionError,
     parse_action,
-    replay_ledger,
+    replay_history,
 )
 
 
@@ -151,16 +151,18 @@ class ResearchLoopTests(unittest.TestCase):
             self.assertIn("prediction", final_state.candidates["c.revised"].metadata)
             self.assertAlmostEqual(final_state.spent_budget, 14.5)
 
-            ledger = JsonlEventLedger(path)
-            events = ledger.verify()
+            history = JsonlRunHistory(path)
+            events = history.read_events()
             self.assertEqual(len(events), len(actions))
-            self.assertEqual(events[0].prev_hash, GENESIS_HASH)
-            for previous, current in zip(events, events[1:]):
-                self.assertEqual(current.prev_hash, previous.event_hash)
+            self.assertEqual([event.seq for event in events], list(range(len(actions))))
+            self.assertEqual(
+                set(events[0].to_record()),
+                {"version", "seq", "type", "payload", "cost"},
+            )
             with self.assertRaises(TypeError):
                 events[0].payload["hypothesis_id"] = "tampered"  # type: ignore[index]
 
-            replayed = replay_ledger(ledger, total_budget=30)
+            replayed = replay_history(history, total_budget=30)
             reopened = ResearchLoop(path, total_budget=30).state
             self.assertEqual(replayed.to_dict(), final_state.to_dict())
             self.assertEqual(reopened.to_dict(), final_state.to_dict())
@@ -173,12 +175,12 @@ class ResearchLoopTests(unittest.TestCase):
                         "claim": {"kind": "forbidden"},
                     }
                 )
-            self.assertEqual(len(ledger.verify()), len(actions))
+            self.assertEqual(len(history.read_events()), len(actions))
 
     def test_budget_failure_is_not_appended(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            ledger = JsonlEventLedger(Path(directory) / "budget.jsonl")
-            loop = ResearchLoop(ledger, total_budget=2)
+            history = JsonlRunHistory(Path(directory) / "budget.jsonl")
+            loop = ResearchLoop(history, total_budget=2)
             loop.dispatch(
                 {
                     "type": "propose_hypothesis",
@@ -200,14 +202,14 @@ class ResearchLoopTests(unittest.TestCase):
                     }
                 )
 
-            self.assertEqual(len(ledger.verify()), 1)
+            self.assertEqual(len(history.read_events()), 1)
             self.assertAlmostEqual(loop.state.spent_budget, 1.5)
             self.assertEqual(loop.state.hypotheses["h1"].status, Lifecycle.PROPOSED)
 
     def test_invalid_lifecycle_is_rejected_without_event(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            ledger = JsonlEventLedger(Path(directory) / "transitions.jsonl")
-            loop = ResearchLoop(ledger, total_budget=20)
+            history = JsonlRunHistory(Path(directory) / "transitions.jsonl")
+            loop = ResearchLoop(history, total_budget=20)
             loop.dispatch(
                 {
                     "type": "propose_hypothesis",
@@ -256,7 +258,7 @@ class ResearchLoopTests(unittest.TestCase):
             with self.assertRaises(TransitionError):
                 loop.dispatch({"type": "commit", "candidate_id": "c1"})
 
-            self.assertEqual(len(ledger.verify()), 3)
+            self.assertEqual(len(history.read_events()), 3)
             self.assertEqual(loop.state.candidates["c1"].status, Lifecycle.CANDIDATE)
 
     def test_grounded_negative_close_is_terminal_and_replayable(self) -> None:
@@ -300,7 +302,7 @@ class ResearchLoopTests(unittest.TestCase):
             self.assertTrue(loop.state.negative_closed)
             self.assertEqual(loop.state.terminal_decision, "negative_close")
             self.assertEqual(
-                replay_ledger(JsonlEventLedger(path), total_budget=5).to_dict(),
+                replay_history(JsonlRunHistory(path), total_budget=5).to_dict(),
                 loop.state.to_dict(),
             )
             with self.assertRaises(TransitionError):
@@ -357,7 +359,7 @@ class ResearchLoopTests(unittest.TestCase):
                 )
             self.assertFalse(loop.state.terminal)
 
-    def test_tampering_breaks_hash_verification(self) -> None:
+    def test_nonsequential_history_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "tamper.jsonl"
             loop = ResearchLoop(path, total_budget=5)
@@ -371,11 +373,11 @@ class ResearchLoopTests(unittest.TestCase):
             )
 
             record = json.loads(path.read_text(encoding="utf-8"))
-            record["payload"]["claim"]["kind"] = "ground_state_projector"
+            record["seq"] = 1
             path.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
-            with self.assertRaises(LedgerIntegrityError):
-                JsonlEventLedger(path).verify()
+            with self.assertRaises(HistoryIntegrityError):
+                JsonlRunHistory(path).read_events()
 
     def test_action_parser_is_strict_and_json_only(self) -> None:
         with self.assertRaises(ActionParseError):

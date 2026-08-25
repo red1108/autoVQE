@@ -7,10 +7,9 @@ exact reference data lives in :class:`PrivateEvaluationContext`.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass, fields, is_dataclass, replace
+from dataclasses import asdict, dataclass, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping, Sequence, TypeVar, Union
@@ -205,6 +204,7 @@ class PublicProblem:
     def create(
         cls,
         *,
+        problem_id: str = "problem",
         num_qubits: int,
         pauli_terms: Sequence[PauliTerm],
         encoding: EncodingSpec,
@@ -213,10 +213,10 @@ class PublicProblem:
         backend: BackendSpec,
         schema_version: str = SCHEMA_VERSION,
     ) -> "PublicProblem":
-        """Create a public problem with a content-derived stable identifier."""
+        """Create a public problem with a caller-supplied descriptive identifier."""
 
-        placeholder = cls(
-            problem_id="pending",
+        return cls(
+            problem_id=problem_id,
             num_qubits=num_qubits,
             pauli_terms=tuple(pauli_terms),
             encoding=encoding,
@@ -225,23 +225,6 @@ class PublicProblem:
             backend=backend,
             schema_version=schema_version,
         )
-        return replace(placeholder, problem_id=canonical_hash(placeholder.identity_payload()))
-
-    def identity_payload(self) -> dict[str, Any]:
-        """Return the public content covered by ``problem_id``."""
-
-        return {
-            "backend": self.backend,
-            "encoding": self.encoding,
-            "num_qubits": self.num_qubits,
-            "pauli_terms": self.pauli_terms,
-            "reference": self.reference,
-            "schema_version": self.schema_version,
-            "sector": self.sector,
-        }
-
-    def has_valid_problem_id(self) -> bool:
-        return self.problem_id == canonical_hash(self.identity_payload())
 
 
 @dataclass(frozen=True)
@@ -315,7 +298,7 @@ def canonical_data(value: Any) -> Any:
 
 
 def canonical_json(value: Any) -> str:
-    """Serialize a value deterministically for hashing or durable exchange."""
+    """Serialize a supported value as stable, portable JSON."""
 
     return json.dumps(
         canonical_data(value),
@@ -326,24 +309,18 @@ def canonical_json(value: Any) -> str:
     )
 
 
-def canonical_hash(value: Any) -> str:
-    """Return the SHA-256 digest of :func:`canonical_json`."""
-
-    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
-
-
 T = TypeVar("T")
 
 
 def assert_agent_safe(value: T) -> T:
-    """Reject private or policy-derived fields in an agent-facing artifact."""
+    """Reject private or policy-derived fields in agent-facing data."""
 
     def walk(item: Any, path: str) -> None:
         if is_dataclass(item) and not isinstance(item, type):
             for field in fields(item):
                 lowered = field.name.lower()
                 if lowered in FORBIDDEN_AGENT_KEYS:
-                    raise ValueError(f"agent-facing artifact contains forbidden field {path}{field.name}")
+                    raise ValueError(f"agent-facing data contains forbidden field {path}{field.name}")
                 walk(getattr(item, field.name), f"{path}{field.name}.")
             return
         if isinstance(item, Mapping):
@@ -352,7 +329,7 @@ def assert_agent_safe(value: T) -> T:
                     raise TypeError("agent-facing mappings require string keys")
                 lowered = key.lower()
                 if lowered in FORBIDDEN_AGENT_KEYS:
-                    raise ValueError(f"agent-facing artifact contains forbidden key {path}{key}")
+                    raise ValueError(f"agent-facing data contains forbidden key {path}{key}")
                 walk(nested, f"{path}{key}.")
             return
         if isinstance(item, (list, tuple, set, frozenset)):
@@ -379,6 +356,5 @@ __all__ = [
     "SectorSpec",
     "assert_agent_safe",
     "canonical_data",
-    "canonical_hash",
     "canonical_json",
 ]

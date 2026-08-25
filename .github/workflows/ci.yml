@@ -14,7 +14,6 @@ jobs:
         with:
           python-version: "3.10"
       - run: uv sync
-      - run: uv run python -m compileall -q autovqe meta_agent tests
+      - run: uv run python -m compileall -q autovqe tests
       - run: uv run python -m unittest discover -s tests -v
       - run: uv run python -m autovqe.harness check
-      - run: uv run python -m autovqe.harness solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2

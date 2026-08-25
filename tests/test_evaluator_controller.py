@@ -156,7 +156,7 @@ class ClosedControllerTests(unittest.TestCase):
                 }
             )
             original = parity_ansatz().to_dict()
-            controller.dispatch_external(
+            accepted = controller.dispatch_external(
                 {
                     "type": "submit_candidate",
                     "candidate_id": "original",
@@ -168,6 +168,7 @@ class ClosedControllerTests(unittest.TestCase):
                     },
                 }
             )
+            self.assertEqual(accepted.result, {"accepted": True})
             renamed = parity_ansatz().to_dict()
             renamed["name"] = "cosmetic_new_name"
             renamed["parameters"] = [{"name": "alpha"}]
@@ -188,6 +189,7 @@ class ClosedControllerTests(unittest.TestCase):
                         },
                     }
                 )
+
     def test_probe_to_candidate_to_commit_feedback_cycle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = ResearchController(
@@ -300,7 +302,7 @@ class ClosedControllerTests(unittest.TestCase):
 
     def test_negative_close_requires_terminal_branches_and_substantive_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            with patch("autovqe.controller.MAX_LEDGER_EVENTS", 4):
+            with patch("autovqe.controller.MAX_HISTORY_EVENTS", 4):
                 controller = ResearchController(
                     two_qubit_problem(), Path(directory) / "events.jsonl"
                 )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import unittest
 from dataclasses import replace
@@ -16,7 +15,6 @@ from autovqe.contracts import (
     ReferenceSpec,
     SectorSpec,
     assert_agent_safe,
-    canonical_hash,
     canonical_json,
 )
 from autovqe.observations import adapt_prepare_problem, public_problem_from_prepare
@@ -32,8 +30,6 @@ class CanonicalSerializationTests(unittest.TestCase):
             canonical_json(value),
             '{"a":[2,1],"middle":{"a":null,"b":true},"z":0.0}',
         )
-        self.assertEqual(canonical_hash(value), canonical_hash(json.loads(canonical_json(value))))
-        self.assertEqual(len(canonical_hash(value)), 64)
 
     def test_canonical_json_rejects_non_finite_numbers(self) -> None:
         for value in (math.inf, -math.inf, math.nan):
@@ -58,7 +54,7 @@ class ProblemContractTests(unittest.TestCase):
         self.assertEqual(views.public, views.public_problem)
         self.assertEqual(views.private, views.private_context)
         self.assertEqual(views.safe, views.observation_bundle)
-        self.assertTrue(views.public_problem.has_valid_problem_id())
+        self.assertEqual(views.public_problem.problem_id, self.problem.name)
         self.assertEqual(views.public_problem.num_qubits, 2)
         self.assertEqual(views.public_problem.reference.occupation, (1, 0))
         self.assertEqual(views.public_problem.backend.basis_gates, ("rx", "ry", "rz", "cx"))
@@ -75,21 +71,16 @@ class ProblemContractTests(unittest.TestCase):
         lowered = payload.lower()
         for forbidden in FORBIDDEN_AGENT_KEYS:
             self.assertNotIn(f'"{forbidden}"', lowered)
-        self.assertNotIn(self.problem.name, payload)
+        self.assertIn(self.problem.name, payload)
         self.assertFalse(hasattr(views.observation_bundle, "model_class"))
         self.assertFalse(hasattr(views.observation_bundle, "recommendation"))
-        self.assertEqual(len(views.observation_bundle.content_hash()), 64)
 
-    def test_public_identity_and_observation_hash_are_deterministic(self) -> None:
+    def test_public_problem_name_and_observation_json_are_stable(self) -> None:
         first = adapt_prepare_problem(self.problem)
         second_problem = prepare.load_problem(ROOT / "examples" / "h2_2q.json")
         second = adapt_prepare_problem(second_problem)
 
         self.assertEqual(first.public_problem.problem_id, second.public_problem.problem_id)
-        self.assertEqual(
-            first.observation_bundle.content_hash(),
-            second.observation_bundle.content_hash(),
-        )
         self.assertEqual(
             first.observation_bundle.to_canonical_json(),
             second.observation_bundle.to_canonical_json(),

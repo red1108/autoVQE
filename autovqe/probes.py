@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
@@ -30,7 +28,6 @@ class ProbeValidationError(ValueError):
 
 @dataclass(frozen=True)
 class ProbeReceipt:
-    request_hash: str
     probe_type: str
     metrics: dict[str, float | int | bool | str | list[float]]
     cost_units: float
@@ -39,14 +36,6 @@ class ProbeReceipt:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-def canonical_json(value: Mapping[str, Any]) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-
-
-def request_hash(request: Mapping[str, Any]) -> str:
-    return hashlib.sha256(canonical_json(request).encode("utf-8")).hexdigest()
 
 
 def hamiltonian_from_public(problem: PublicProblem) -> SparsePauliOp:
@@ -499,13 +488,11 @@ def run_algebraic_probe(
     probe_type, generator, cost_units = _probe_inputs_and_cost(
         hamiltonian, request
     )
-    digest = request_hash(request)
 
     if probe_type == "normalized_commutator":
         validate_symmetry_generator(hamiltonian, generator)
         residual = normalized_commutator(hamiltonian, generator)
         return ProbeReceipt(
-            request_hash=digest,
             probe_type=probe_type,
             metrics={
                 "residual": residual,
@@ -520,7 +507,6 @@ def run_algebraic_probe(
             raise ProbeValidationError("reference_moments requires a reference state")
         mean, variance = reference_moments(reference, generator)
         return ProbeReceipt(
-            request_hash=digest,
             probe_type=probe_type,
             metrics={"mean": mean, "variance": variance},
             cost_units=cost_units,

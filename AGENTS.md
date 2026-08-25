@@ -1,28 +1,25 @@
 # AutoVQE agent instructions
 
-These instructions apply to Hamiltonian-solving and ansatz-discovery tasks in
-this repository. Ordinary maintenance requests may edit the implementation as
-the user directs.
+These instructions apply to Hamiltonian analysis and ansatz discovery in this
+repository. Ordinary maintenance requests may edit the implementation as the
+user directs.
 
-- Treat a user-provided `user_problem/hamiltonian.json` as immutable input.
-  Do not add a reference energy/state or rename it to match a fixture.
-- Read the README's trust-boundary and research-lifecycle sections before
-  choosing a workflow. The legacy `solve` command is a compatibility and
-  calibration path; do not present its reference-aware success flag as an
-  independent research result.
-- Express proposed variational circuits as the typed `AnsatzSpec`. Do not add
-  candidate-reported energy, parameter counts, gate counts, hidden literals,
-  or optimized values. The trusted compiler/evaluator derives those fields.
-- Treat hypotheses as falsifiable branches. Use evaluator-owned probes and the
-  fixed audit, smoke, and promotion stages; retain failed or retired branches.
-- Stop a research loop only after the controller accepts `positive_commit` or
-  grounded `negative_close`. A positive commit proves only the recorded local
-  promotion rule, not ground-state accuracy or cross-problem generalization.
-- In a sealed run, use only the generated bundle client and signed gateway
-  publications. Never seek the source checkout, raw private problem,
-  evaluator, reference, key, anchor, or previous trials.
-- Report a final optimized parameter binding only from the trusted terminal
-  result export. If the run is local/unsealed or lacks an external score, label
-  it accordingly instead of upgrading the claim.
+- Treat `user_problem/hamiltonian.json` as immutable input. Do not add a
+  reference energy or state, and do not rename it to match an example.
+- Read the README research workflow, evaluator-owned evidence rules, action
+  protocol, and ansatz playbook before choosing a strategy.
+- Express every proposed variational circuit as a typed `AnsatzSpec`. Do not
+  submit candidate-authored energy, optimized values, parameter counts, gate
+  counts, depth, custom operations, or hidden numeric answers.
+- Treat hypotheses as falsifiable branches. Use the available physical probes
+  and the fixed audit, smoke, and promotion stages. Preserve failed and retired
+  branches so later decisions retain their evidence.
+- Use symmetry-preserving gates only after the relevant conserved quantity is
+  established and the candidate passes operation-level preservation checks.
+- Stop only after the controller accepts `positive_commit` or a grounded
+  `negative_close`. A positive decision proves only the recorded local
+  promotion rule, not exact ground-state accuracy or generalization.
+- Report the optimized parameter binding only from `research result`. If no
+  independent reference score was provided, state that limitation explicitly.
 - Before reporting implementation changes, run the relevant unit tests and
   `uv run python -m autovqe.harness check`.

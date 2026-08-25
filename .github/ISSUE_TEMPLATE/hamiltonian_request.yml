@@ -1,0 +1,26 @@
+name: Hamiltonian input request
+description: Propose a Hamiltonian that exercises a missing physics regime.
+title: "[Hamiltonian]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: hamiltonian
+    attributes:
+      label: Hamiltonian
+      description: Describe the mapping, geometry, basis, and source.
+    validations:
+      required: true
+  - type: textarea
+    id: physics
+    attributes:
+      label: Physics structure
+      description: Describe the symmetry, ansatz, or resource behavior this input exercises.
+    validations:
+      required: true
+  - type: textarea
+    id: reference
+    attributes:
+      label: Independent evaluation
+      description: Explain how an eventual result could be checked without exposing the answer during research.
+    validations:
+      required: true

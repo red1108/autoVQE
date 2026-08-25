@@ -24,7 +24,7 @@ from autovqe.contracts import (
 from autovqe.controller import ControllerError, ResearchController
 from autovqe.evaluator import (
     EvaluationProtocol,
-    candidate_hash,
+    candidate_identity,
     evaluate_ansatz,
     evaluate_public_problem,
 )
@@ -142,13 +142,13 @@ class TrustedEvaluatorHardeningTests(unittest.TestCase):
         self.assertFalse(result.receipt.valid)
         self.assertIn("finite", result.receipt.violations[0])
 
-    def test_rotation_split_and_cancellation_share_semantic_hash(self) -> None:
+    def test_rotation_split_and_cancellation_share_semantic_identity(self) -> None:
         unsplit = rotation_spec((1.0,))
         split = rotation_spec((0.5, 0.5))
         cancel_retry = rotation_spec((1.0, 1.0, -1.0))
 
-        self.assertEqual(candidate_hash(unsplit), candidate_hash(split))
-        self.assertEqual(candidate_hash(unsplit), candidate_hash(cancel_retry))
+        self.assertEqual(candidate_identity(unsplit), candidate_identity(split))
+        self.assertEqual(candidate_identity(unsplit), candidate_identity(cancel_retry))
 
     def test_rotation_split_cannot_buy_a_fresh_controller_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

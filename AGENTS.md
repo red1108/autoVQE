@@ -22,7 +22,9 @@ user directs.
 - Treat hypotheses as falsifiable branches. Use the available physical probes
   and the fixed audit, smoke, and promotion stages. Preserve failed and retired
   branches so later decisions retain their evidence. Bring a candidate from a
-  different primary hypothesis through smoke before requesting promotion.
+  different primary `ansatz_structure` root through smoke before requesting
+  promotion; a symmetry hypothesis or cosmetic family duplicate is not a
+  comparator.
 - Cite supported symmetry probe IDs separately from the candidate's primary
   structural hypothesis. Use symmetry-preserving gates only after a relevant,
   non-spectator conserved quantity is established and the candidate passes

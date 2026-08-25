@@ -1,18 +1,10 @@
 """AutoVQE package."""
 
 __all__ = [
-    "ansatz_ir",
-    "backend",
-    "compiler",
-    "contracts",
-    "controller",
+    "ansatz",
     "evaluator",
     "harness",
-    "history",
-    "macros",
-    "observations",
     "problem",
     "probes",
     "research",
-    "research_cli",
 ]

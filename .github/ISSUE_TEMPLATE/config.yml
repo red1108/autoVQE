@@ -1,5 +1,0 @@
-blank_issues_enabled: true
-contact_links:
-  - name: Security report
-    url: https://github.com/red1108/autoVQE/security
-    about: Please use private vulnerability reporting for security issues.

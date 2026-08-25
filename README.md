@@ -59,49 +59,21 @@ answer hidden under another field.
 
 [`examples/h2_2q.json`](examples/h2_2q.json) is a small format example.
 
-## Run the research loop
-
-Read the raw input and inspect its mechanically derived structure:
-
-```bash
-uv run autovqe inspect --problem user_problem/hamiltonian.json --json
-uv run autovqe research init \
-  --problem user_problem/hamiltonian.json \
-  --run-dir .autovqe-runtime/research \
-  --budget 100
-```
-
-Write one action at a time under `.autovqe-runtime/actions/`, then apply it:
-
-```bash
-uv run autovqe research step \
-  --run-dir .autovqe-runtime/research \
-  --action .autovqe-runtime/actions/001.json
-
-uv run autovqe research status --run-dir .autovqe-runtime/research
-```
-
-Continue until the controller accepts `positive_commit` or `negative_close`.
-Only then request the result:
-
-```bash
-uv run autovqe research result --run-dir .autovqe-runtime/research
-```
-
-The complete action protocol and physics search guide are in
-[program.md](program.md).
-
-## Give the problem to Codex
+## Solve with Codex
 
 Start Codex in a fresh clone or clean worktree after adding
 `user_problem/hamiltonian.json`. The goal can stay short:
 
 ```text
-Read program.md, then solve user_problem/hamiltonian.json with AutoVQE's closed
-research loop.
+Read program.md. Analyze user_problem/hamiltonian.json and use AutoVQE's closed
+research loop to discover and optimize an ansatz.
 Continue until the controller accepts a terminal decision, then report only
 the result returned by the CLI.
 ```
+
+Codex reads the Hamiltonian, creates the action files, runs the fixed
+evaluations, and iterates until the controller accepts a result. The complete
+research protocol and physics search guide are in [program.md](program.md).
 
 ## What acceptance means
 
@@ -112,3 +84,23 @@ after sufficient objective-active failure evidence.
 
 Neither decision proves the exact ground-state energy or generalization to a
 different Hamiltonian. AutoVQE reports that limitation explicitly.
+
+## Manual research commands
+
+The commands below are optional; they are mainly useful for inspecting or
+debugging the loop that Codex normally drives:
+
+```bash
+uv run autovqe inspect --problem user_problem/hamiltonian.json --json
+uv run autovqe research init \
+  --problem user_problem/hamiltonian.json \
+  --run-dir .autovqe-runtime/research \
+  --budget 100
+
+uv run autovqe research step \
+  --run-dir .autovqe-runtime/research \
+  --action .autovqe-runtime/actions/001.json
+
+uv run autovqe research status --run-dir .autovqe-runtime/research
+uv run autovqe research result --run-dir .autovqe-runtime/research
+```

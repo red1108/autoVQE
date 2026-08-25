@@ -50,12 +50,15 @@ def _center(operator: SparsePauliOp) -> SparsePauliOp:
 def _norm(operator: SparsePauliOp) -> float:
     return float(np.linalg.norm(np.asarray(operator.coeffs, complex)))
 
+def _active_norm(operator: SparsePauliOp) -> float:
+    return _norm(_center(operator))
+
 def validate_hamiltonian_observable(hamiltonian: SparsePauliOp) -> SparsePauliOp:
     return _observable(hamiltonian, "Hamiltonian")
 
 def _generator(generator: SparsePauliOp, minimum: float = MIN_GENERATOR_NORM) -> tuple[SparsePauliOp, float]:
     if not math.isfinite(float(minimum)) or minimum <= 0: raise ValueError("min_norm must be finite and positive")
-    generator = _observable(generator, "generator"); active = _norm(_center(generator))
+    generator = _observable(generator, "generator"); active = _active_norm(generator)
     if not math.isfinite(active) or active < minimum: raise ProbeValidationError(f"generator is identity-only, zero, or below the minimum active norm {minimum:g}")
     return generator, active
 
@@ -65,7 +68,7 @@ def validate_generator_observable(generator: SparsePauliOp, *, min_norm: float =
 def _commutator(hamiltonian: SparsePauliOp, generator: SparsePauliOp) -> tuple[float, int, SparsePauliOp, SparsePauliOp]:
     hamiltonian, (generator, q_norm) = _observable(hamiltonian, "Hamiltonian"), _generator(generator)
     if hamiltonian.num_qubits != generator.num_qubits: raise ProbeValidationError("Hamiltonian and generator qubit counts differ")
-    h_norm = _norm(_center(hamiltonian))
+    h_norm = _active_norm(hamiltonian)
     if h_norm <= 1e-14: raise ProbeValidationError("Hamiltonian has no non-identity component")
     products = len(hamiltonian.paulis) * len(generator.paulis)
     if products > MAX_COMMUTATOR_TERM_PRODUCTS: raise ProbeValidationError(f"commutator probe exceeds the {MAX_COMMUTATOR_TERM_PRODUCTS}-term-product cap")

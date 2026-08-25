@@ -29,6 +29,7 @@ from .ansatz import (
 )
 from .problem import BackendSpec, PublicProblem, hamiltonian_from_problem
 from .probes import (
+    _active_norm,
     _expectation_energy,
     initial_state_circuit,
     validate_hamiltonian_observable,
@@ -334,10 +335,7 @@ def _parameter_coordinates(
     compiled: CompiledAnsatz, analysis: tuple[Any, ...]
 ) -> tuple[_ParameterCoordinate, ...]:
     audit = compiled.audit
-    raw = audit.get("trainable_parameter_names")
-    if raw is None:
-        raw = tuple(compiled.parameters)
-    audited = tuple(str(name) for name in raw)
+    audited = tuple(str(name) for name in audit["trainable_parameter_names"])
     _, names, vectors, row_space = analysis
     if set(audited) != set(compiled.parameters) or set(names) != set(audited):
         raise EvaluationError("compiled parameters do not match the audit")
@@ -406,15 +404,16 @@ def _audit_candidate(
         compiled = CompiledAnsatz(circuit, compiled.parameters, compiled.audit)
         analysis = _canonical_analysis(parsed)
         coordinates = _parameter_coordinates(compiled, analysis)
-        canonical = BackendSpec(CANONICAL_BASIS_GATES)
-        samples = [
-            _transpiled_metrics(
-                compiled.circuit, problem.backend, protocol.transpile_optimization_level
-            ),
-            _transpiled_metrics(
-                compiled.circuit, canonical, protocol.transpile_optimization_level
-            ),
-        ]
+        backends = (problem.backend, BackendSpec(CANONICAL_BASIS_GATES))
+        samples: list[dict[str, int]] = []
+
+        def measure(circuit: QuantumCircuit) -> None:
+            samples.extend(
+                _transpiled_metrics(circuit, backend, protocol.transpile_optimization_level)
+                for backend in backends
+            )
+
+        measure(compiled.circuit)
         rng = _audit_rng(_identity(parsed, analysis), protocol.seed)
         for _ in range(protocol.audit_binding_count):
             values = rng.uniform(
@@ -422,24 +421,10 @@ def _audit_candidate(
                 protocol.audit_binding_scale,
                 size=len(coordinates),
             )
-            bound = _bind(compiled, coordinates, values)
-            samples.append(
-                _transpiled_metrics(
-                    bound, problem.backend, protocol.transpile_optimization_level
-                )
-            )
-            samples.append(
-                _transpiled_metrics(
-                    bound, canonical, protocol.transpile_optimization_level
-                )
-            )
+            measure(_bind(compiled, coordinates, values))
         resources = _worst_metrics(samples)
         resources["parameters"] = len(coordinates)
-        return _AuditRun(
-            ResourceAudit(True, compiled.audit, resources),
-            compiled,
-            coordinates,
-        )
+        return _AuditRun(ResourceAudit(True, compiled.audit, resources), compiled, coordinates)
     except (AnsatzIRValidationError, EvaluationError, ValueError, KeyError) as exc:
         return _AuditRun(ResourceAudit(False, {}, {}, (f"{type(exc).__name__}: {exc}",)))
 
@@ -451,11 +436,7 @@ def audit_public_candidate(
 ) -> ResourceAudit:
     selected = protocol or EvaluationProtocol()
     selected.validate()
-    return _audit_candidate(
-        problem,
-        spec,
-        protocol=selected,
-    ).result
+    return _audit_candidate(problem, spec, protocol=selected).result
 
 def _trace_summary(values: Sequence[float]) -> tuple[tuple[int, float], ...]:
     if not values:
@@ -521,15 +502,6 @@ def _optimize(
     if not observed:
         raise EvaluationError("optimizer did not evaluate the objective")
     return best_values, best, calls, _trace_summary(trace), max(observed) - min(observed)
-
-
-def _active_norm(hamiltonian: SparsePauliOp) -> float:
-    values = [
-        abs(complex(coefficient))
-        for label, coefficient in zip(hamiltonian.paulis.to_labels(), hamiltonian.coeffs, strict=True)
-        if set(label) != {"I"}
-    ]
-    return float(np.linalg.norm(values)) if values else 0.0
 
 
 def evaluate_public_problem(

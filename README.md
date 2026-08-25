@@ -94,11 +94,11 @@ The complete action protocol and physics search guide are in
 ## Give the problem to Codex
 
 Start Codex in a fresh clone or clean worktree after adding
-`user_problem/hamiltonian.json`. The repository's `AGENTS.md` supplies the
-research constraints; the goal can stay short:
+`user_problem/hamiltonian.json`. The goal can stay short:
 
 ```text
-Solve user_problem/hamiltonian.json with AutoVQE's closed research loop.
+Read program.md, then solve user_problem/hamiltonian.json with AutoVQE's closed
+research loop.
 Continue until the controller accepts a terminal decision, then report only
 the result returned by the CLI.
 ```

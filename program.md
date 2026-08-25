@@ -4,21 +4,29 @@ Turn `user_problem/hamiltonian.json` into an evidence-backed variational
 ansatz through AutoVQE's closed research loop. Read the raw Hamiltonian before
 choosing a model. The agent proposes hypotheses, probes, and typed circuits;
 the evaluator alone supplies energies, optimized values, and resource counts.
+These rules apply to Hamiltonian analysis and ansatz discovery; ordinary
+maintenance may edit the implementation as the user directs.
 
 ## Ownership and workflow
 
-Treat the input as immutable. Manually write only action JSON under
-`.autovqe-runtime/actions/`, apply it with `uv run autovqe research step`, and
-read controller state with `uv run autovqe research status`. The controller
-snapshots the problem at `research init` and does not reread the original input
-during that run. The CLI owns run history and evidence. Request
-`uv run autovqe research result` only after a terminal decision; it is the sole
-source for the optimized parameter binding.
+Treat `user_problem/hamiltonian.json` as immutable. Do not add a reference
+energy or state or rename the input to match an example. During discovery, do
+not modify AutoVQE source, tests, or documentation. Manually write only action
+JSON under `.autovqe-runtime/actions/`, apply it with
+`uv run autovqe research step`, and read controller state with
+`uv run autovqe research status`.
 
-Action JSON is strict: every unlisted field is rejected. Do not call the
-evaluator directly, run another eigensolver or optimizer, edit run history, or
-look up a reference solution. Report a harness defect instead of patching the
-source during a discovery run.
+The controller snapshots the problem at `research init` and does not reread
+the original input during that run. The CLI owns run history and evidence.
+Request `uv run autovqe research result` only after a terminal decision; it is
+the sole source for the optimized parameter binding.
+
+Action JSON is strict: every unlisted field is rejected. Route every probe,
+energy, optimization, and resource measurement through
+`uv run autovqe research ...`. Do not import the evaluator directly, run
+another eigensolver or optimizer, edit controller-owned evidence, bypass the
+budget, or look up a reference solution. Report a harness defect instead of
+patching around it during a discovery run.
 
 ## Read the Hamiltonian
 
@@ -256,9 +264,9 @@ independent roots. Flat phase-only failures do not establish negative closure.
 A positive decision proves only the recorded local promotion rule, not exact
 ground-state accuracy or generalization.
 
-Keep failed and revised branches: they prevent cycling and preserve evidence.
-Commit only a non-dominated result. Report optimized parameters only from
-`research result`, and state when no independent reference score was supplied.
+Keep failed, retired, and revised branches: they prevent cycling and preserve
+evidence. Commit only a non-dominated result. State when no independent
+reference score was supplied.
 
 ## Limits and costs
 
@@ -273,14 +281,7 @@ External `record_symmetry_probe` and `record_evaluation` actions are forbidden.
 New agent-chosen IDs match `[A-Za-z0-9][A-Za-z0-9_.:-]*` and contain at most 96
 characters.
 
-## Failure modes
+## Maintenance
 
-- Trusting a problem label instead of its Pauli terms.
-- Adding every term before a small motif earns more expressivity.
-- Calling an objective-flat branch a structural failure.
-- Claiming SU(2) from one U(1) commutator.
-- Using conservation gates without supported, relevant sector evidence.
-- Giving every gate its own parameter without testing sharing.
-- Comparing only variants of one primary structure.
-- Reporting candidate-authored energies, counts, or optimized values.
-- Treating local promotion as an exact ground-state result.
+For ordinary implementation changes, run the relevant unit tests and
+`uv run python -m autovqe.harness check` before reporting completion.

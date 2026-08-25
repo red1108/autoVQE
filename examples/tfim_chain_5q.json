@@ -1,5 +1,5 @@
 {
-  "name": "ising_1d_5q_open_chain",
+  "name": "tfim_chain_5q",
   "pauli_terms": [
     { "pauli": "ZZIII", "coeff": 1.0 },
     { "pauli": "IZZII", "coeff": 1.0 },

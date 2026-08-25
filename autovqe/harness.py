@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 from .evaluator import EvaluationProtocol, evaluate_public_problem
-from .problem import DEFAULT_PROBLEM_PATH, load_problem, observe_problem
+from .problem import load_problem, observe_problem
 from .research import execute_action_file, initialize_run, render_json, run_result, run_status
 
 DEFAULT_RUN_DIR = Path(".autovqe-runtime/research")
@@ -78,12 +78,12 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AutoVQE Hamiltonian-to-ansatz research harness")
     commands = parser.add_subparsers(dest="command", required=True)
     inspect = commands.add_parser("inspect", help="show Hamiltonian structure")
-    inspect.add_argument("--problem", default=str(DEFAULT_PROBLEM_PATH))
+    inspect.add_argument("--problem", required=True)
     inspect.add_argument("--json", action="store_true")
     commands.add_parser("check", help="run fast scientific self-checks")
     research = commands.add_parser("research", help="run the closed research loop").add_subparsers(dest="research_command", required=True)
     init = research.add_parser("init", help="start a research run")
-    init.add_argument("--problem", default=str(DEFAULT_PROBLEM_PATH))
+    init.add_argument("--problem", required=True)
     init.add_argument("--run-dir", default=str(DEFAULT_RUN_DIR))
     init.add_argument("--budget", type=float, default=100.0)
     step = research.add_parser("step", help="apply one JSON action")

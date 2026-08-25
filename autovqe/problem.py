@@ -9,7 +9,6 @@ from typing import Any, Mapping, Sequence
 from qiskit.quantum_info import SparsePauliOp
 
 SCHEMA_VERSION = "1"
-DEFAULT_PROBLEM_PATH = Path("user_problem/hamiltonian.json")
 DEFAULT_BASIS_GATES = ("rx", "ry", "rz", "cx")
 TOP_FIELDS = set("name pauli_terms basis_gates coupling_map initial_state_hint source_note symmetry".split())
 SYMMETRY_FIELDS = set(
@@ -173,7 +172,7 @@ def _symmetry(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("symmetry.active_electrons and symmetry.particle_number must agree")
     return value
 
-def load_problem_document(path: str | Path = DEFAULT_PROBLEM_PATH) -> tuple[PublicProblem, dict[str, Any]]:
+def load_problem_document(path: str | Path) -> tuple[PublicProblem, dict[str, Any]]:
     source = Path(path)
     try:
         raw = decode_json_object(source.read_text(encoding="utf-8-sig"), source)
@@ -224,7 +223,7 @@ def load_problem_document(path: str | Path = DEFAULT_PROBLEM_PATH) -> tuple[Publ
     assert isinstance(document, dict)
     return problem, document
 
-def load_problem(path: str | Path = DEFAULT_PROBLEM_PATH) -> PublicProblem:
+def load_problem(path: str | Path) -> PublicProblem:
     return load_problem_document(path)[0]
 
 def hamiltonian_from_problem(problem: PublicProblem) -> SparsePauliOp:

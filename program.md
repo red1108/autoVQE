@@ -1,18 +1,20 @@
 # AutoVQE research program
 
-Turn `user_problem/hamiltonian.json` into an evidence-backed variational
-ansatz through AutoVQE's closed research loop. Read the raw Hamiltonian before
-choosing a model. The agent proposes hypotheses, probes, and typed circuits;
-the evaluator alone supplies energies, optimized values, and resource counts.
+Turn the Hamiltonian at the exact path supplied by the user into an
+evidence-backed variational ansatz through AutoVQE's closed research loop.
+Read the raw Hamiltonian before choosing a model. The agent proposes
+hypotheses, probes, and typed circuits; the evaluator alone supplies energies,
+optimized values, and resource counts.
 These rules apply to Hamiltonian analysis and ansatz discovery; ordinary
 maintenance may edit the implementation as the user directs.
 
 ## Ownership and workflow
 
-Treat `user_problem/hamiltonian.json` as immutable. Do not add a reference
-energy or state or rename the input to match an example. During discovery, do
-not modify AutoVQE source, tests, or documentation. Manually write only action
-JSON under `.autovqe-runtime/actions/`, apply it with
+For each run, use only the Hamiltonian path named in the user prompt. If none
+is supplied, request one; do not guess, search for, copy, or rename another
+input. Treat that file as immutable and do not add a reference energy or state.
+During discovery, do not modify AutoVQE source, tests, or documentation.
+Manually write only action JSON under `.autovqe-runtime/actions/`, apply it with
 `uv run autovqe research step`, and read controller state with
 `uv run autovqe research status`.
 
@@ -33,8 +35,8 @@ patching around it during a discovery run.
 Qiskit little-endian ordering is used: the rightmost Pauli letter acts on
 qubit 0. Separate the identity coefficient from the active Hamiltonian; the
 constant shifts every energy but does not select an ansatz. Inspect the raw
-terms and use `uv run autovqe inspect --json` for mechanical graph facts.
-Summarize:
+terms and use `uv run autovqe inspect --problem PATH --json` for mechanical
+graph facts. Summarize:
 
 - active term count, coefficient magnitudes and signs, and locality;
 - X-, Y-, and Z-bearing terms and repeated coefficient classes;

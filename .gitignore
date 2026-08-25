@@ -12,8 +12,7 @@
 /build/
 /dist/
 
-# User-supplied problems and local AutoVQE runs
-/user_problem/
+# Local AutoVQE runs
 /.autovqe-runtime/
 /solve_runs/
 

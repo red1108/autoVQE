@@ -18,7 +18,9 @@ uv run autovqe check
 
 ## Provide a Hamiltonian
 
-Create `user_problem/hamiltonian.json`. The smallest valid document is:
+AutoVQE accepts a Hamiltonian JSON at any path; no special input folder is
+required. Save the file wherever convenient and pass that exact path to Codex
+or `--problem`. The smallest valid document is:
 
 ```json
 {
@@ -57,19 +59,21 @@ qubit.
 Do not include a reference energy, ground state, optimized parameters, or an
 answer hidden under another field.
 
-[`examples/h2_2q.json`](examples/h2_2q.json) is a small format example.
+The repository includes eight ready-to-run Hamiltonians under `examples/`.
 
 ## Solve with Codex
 
-Start Codex in a fresh clone or clean worktree after adding
-`user_problem/hamiltonian.json`. The goal can stay short:
+Start Codex in the repository. This prompt runs the included four-qubit H₂
+example:
 
 ```text
-Read program.md. Analyze user_problem/hamiltonian.json and use AutoVQE's closed
-research loop to discover and optimize an ansatz.
+Read program.md. The Hamiltonian is examples/h2_4q_0p70a.json. Use AutoVQE's
+closed research loop to analyze it and discover and optimize an ansatz.
 Continue until the controller accepts a terminal decision, then report only
 the result returned by the CLI.
 ```
+
+For another problem, replace the example path with the path to its JSON file.
 
 Codex reads the Hamiltonian, creates the action files, runs the fixed
 evaluations, and iterates until the controller accepts a result. The complete
@@ -91,9 +95,9 @@ The commands below are optional; they are mainly useful for inspecting or
 debugging the loop that Codex normally drives:
 
 ```bash
-uv run autovqe inspect --problem user_problem/hamiltonian.json --json
+uv run autovqe inspect --problem examples/h2_4q_0p70a.json --json
 uv run autovqe research init \
-  --problem user_problem/hamiltonian.json \
+  --problem examples/h2_4q_0p70a.json \
   --run-dir .autovqe-runtime/research \
   --budget 100
 

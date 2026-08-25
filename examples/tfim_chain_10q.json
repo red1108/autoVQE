@@ -1,5 +1,5 @@
 {
-  "name": "tfim_n10_g1_open",
+  "name": "tfim_chain_10q",
   "pauli_terms": [
     { "pauli": "ZZIIIIIIII", "coeff": -1.0 },
     { "pauli": "IZZIIIIIII", "coeff": -1.0 },

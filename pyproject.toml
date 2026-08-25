@@ -40,5 +40,4 @@ exclude = [
     "/.codex/",
     "/.venv/",
     "/solve_runs/",
-    "/user_problem/",
 ]

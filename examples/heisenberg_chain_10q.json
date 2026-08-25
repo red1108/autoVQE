@@ -1,5 +1,5 @@
 {
-  "name": "heisenberg_n10_open",
+  "name": "heisenberg_chain_10q",
   "pauli_terms": [
     { "pauli": "XXIIIIIIII", "coeff": 1.0 },
     { "pauli": "YYIIIIIIII", "coeff": 1.0 },

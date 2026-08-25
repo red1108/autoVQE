@@ -23,7 +23,8 @@ repository instructions and protocol remain available to the agent.
    uv run autovqe inspect --problem <problem.json>
    ```
 
-2. Read the action protocol and ansatz playbook.
+2. Read the research protocol and search strategy in
+   [`program.md`](../program.md).
 3. State the physical or workflow invariant the change should preserve.
 4. Identify tests that distinguish the intended behavior from misuse.
 

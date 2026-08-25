@@ -14,10 +14,10 @@ user directs.
   `uv run autovqe research ...`. Do not import the evaluator directly, run a
   separate eigensolver/optimizer, or edit controller-owned evidence to bypass
   the closed research loop and its budget.
-- Read the raw Hamiltonian, README workflow, action protocol, and ansatz
-  playbook before choosing a strategy. Base hypotheses on visible terms,
-  coefficients, locality, graph structure, the initial occupation, and any
-  symmetry that you independently probe.
+- Read the raw Hamiltonian, README workflow, and `program.md` before choosing a
+  strategy. Base hypotheses on visible terms, coefficients, locality, graph
+  structure, the initial occupation, and any symmetry that you independently
+  probe.
 - Express every proposed variational circuit as a typed `AnsatzSpec`. Do not
   submit candidate-authored energy, optimized values, parameter counts, gate
   counts, depth, custom operations, or hidden numeric answers.

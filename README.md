@@ -88,9 +88,8 @@ Only then request the result:
 uv run autovqe research result --run-dir .autovqe-runtime/research
 ```
 
-The exact action schemas and lifecycle are in
-[docs/agent_protocol.md](docs/agent_protocol.md). The physics-oriented
-search guide is [docs/ansatz_playbook.md](docs/ansatz_playbook.md).
+The complete action protocol and physics search guide are in
+[program.md](program.md).
 
 ## Give the problem to Codex
 

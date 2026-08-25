@@ -8,15 +8,19 @@ and keep energy and resource values evaluator-owned.
 
 ```bash
 uv sync
-uv run python -m autovqe.harness check
+uv run autovqe check
 ```
+
+`uv sync` installs the checkout and its `autovqe` command in the project
+environment. Development and user testing should run from a clone so the
+repository instructions and protocol remain available to the agent.
 
 ## Before changing code
 
 1. Inspect the relevant Hamiltonian.
 
    ```bash
-   uv run python -m autovqe.harness inspect --problem <problem.json>
+   uv run autovqe inspect --problem <problem.json>
    ```
 
 2. Read the action protocol and ansatz playbook.
@@ -25,8 +29,8 @@ uv run python -m autovqe.harness check
 
 Do not add file-name special cases or fixed answers. Candidate policy should
 follow observable facts such as locality, support graph, commuting structure,
-coefficient scale, reference occupation, hardware connectivity, and conserved
-sectors.
+coefficient scale, evaluator-owned initial preparation, hardware connectivity,
+and conserved sectors.
 
 ## Required checks
 
@@ -35,7 +39,7 @@ Run these before opening a pull request:
 ```bash
 uv run python -m compileall -q autovqe tests
 uv run python -m unittest discover -s tests -v
-uv run python -m autovqe.harness check
+uv run autovqe check
 git diff --check
 ```
 
@@ -46,14 +50,21 @@ as optional calibration inputs when the change affects that physical regime.
 ## Design guidelines
 
 - Keep Hamiltonian parsing and public observations mechanical.
-- Represent circuits with `AnsatzSpec`; do not accept opaque executable code.
+- Represent circuits with a flat-operation `AnsatzSpec`; do not add candidate
+  preparation, secondary circuit grouping, or opaque executable code.
 - Add an operation only with a physical generator, identity-at-zero behavior,
   applicability rules, resource accounting, limits, and misuse tests.
+- Keep the public variational allowlist at `PauliRotation`, `XYExchange`, and
+  `IsotropicExchange` unless a separately justified protocol change is made.
+- Require supported exact-symmetry evidence and per-operation preservation for
+  both exchange macros.
 - Keep optimizer policy and reported measurements outside candidate metadata.
 - Count parameter occurrences as well as unique parameter names.
-- Check resource use at generic nonzero bindings when numeric simplification
+- Check resource use at deterministic nonzero audit bindings when simplification
   could hide cost.
 - Preserve failed and retired research branches.
+- Keep public actions minimal: the controller derives probe/evaluation IDs,
+  evaluation stages, and terminal evidence.
 - Prefer one measured policy change over a broad circuit rewrite.
 
 ## Pull request notes
@@ -67,11 +78,12 @@ Include:
 - tests run;
 - limitations and unsupported regimes.
 
-Do not commit `.autovqe-runtime/`, local action scratch files, virtual
-environments, caches, or private reference answers.
+Keep supplied problems under `user_problem/` and action scratch files under
+`.autovqe-runtime/`; both are ignored by Git. Do not commit generated run
+state, virtual environments, caches, reference answers, or expected solution
+parameters.
 
 ## Community standards
 
 By participating, you agree to follow the
-[Code of Conduct](CODE_OF_CONDUCT.md). For vulnerability reports, use
-[SECURITY.md](SECURITY.md) instead of public issues.
+[Code of Conduct](CODE_OF_CONDUCT.md).

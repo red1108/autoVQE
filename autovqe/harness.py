@@ -9,14 +9,15 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from . import prepare, research_cli
+from . import research_cli
 from .compiler import compile_ansatz
-from .contracts import assert_agent_safe, canonical_data
+from .contracts import canonical_data
 from .evaluator import EvaluationProtocol, evaluate_public_problem
-from .observations import adapt_prepare_problem
+from .observations import observe_problem
+from .problem import DEFAULT_PROBLEM_PATH, load_problem
 
 
-DEFAULT_PROBLEM = Path("user_problem/hamiltonian.json")
+DEFAULT_PROBLEM = DEFAULT_PROBLEM_PATH
 DEFAULT_RUN_DIR = Path(".autovqe-runtime/research")
 
 
@@ -31,22 +32,21 @@ def _render_json(value: Any) -> str:
 
 
 def _inspect(problem_path: str | Path, *, as_json: bool) -> int:
-    problem = prepare.load_problem(problem_path)
-    views = adapt_prepare_problem(problem)
+    problem = load_problem(problem_path)
+    observation = observe_problem(problem)
     if as_json:
-        print(_render_json(views.observation_bundle))
+        print(_render_json(observation))
         return 0
 
-    structure = views.observation_bundle.structure
-    public = views.public_problem
-    print(f"problem: {public.problem_id}")
-    print(f"qubits: {public.num_qubits}")
+    structure = observation.structure
+    print(f"problem: {problem.problem_id}")
+    print(f"qubits: {problem.num_qubits}")
     print(f"pauli_terms: {structure.term_count}")
     print(f"max_locality: {structure.max_locality}")
     print(f"locality_counts: {dict(structure.locality_counts)}")
-    print(f"support_edges: {len(structure.support_graph_edges)}")
-    print(f"declared_symmetries: {list(public.sector.symmetries)}")
-    print(f"basis_gates: {list(public.backend.basis_gates)}")
+    print(f"support_edges: {structure.support_graph_edge_count}")
+    print(f"declared_symmetries: {list(problem.sector.symmetries)}")
+    print(f"basis_gates: {list(problem.backend.basis_gates)}")
     return 0
 
 
@@ -72,7 +72,6 @@ def _self_check() -> int:
         "name": "self_check_ansatz",
         "num_qubits": 2,
         "parameters": ["theta"],
-        "reference": {"macro": "X", "qubits": [0]},
         "operations": [
             {
                 "macro": "PauliRotation",
@@ -89,22 +88,22 @@ def _self_check() -> int:
             json.dumps(problem_payload, indent=2) + "\n",
             encoding="utf-8",
         )
-        problem = prepare.load_problem(problem_path)
-        views = adapt_prepare_problem(problem)
-        assert_agent_safe(views.observation_bundle)
-        check("problem loads", views.public_problem.num_qubits == 2)
-        check("public observation hides exact reference", "reference_energy" not in _render_json(views.observation_bundle))
-        check("structure analysis runs", views.observation_bundle.structure.term_count == 3)
+        problem = load_problem(problem_path)
+        observation = observe_problem(problem)
+        rendered_observation = _render_json(observation)
+        check("problem loads", problem.num_qubits == 2)
+        check("observation stays compact", "pauli_terms" not in rendered_observation)
+        check("structure analysis runs", observation.structure.term_count == 3)
 
         compiled = compile_ansatz(spec)
         check("typed ansatz compiles", compiled.audit.unique_trainable_params == 1)
         check("compiler derives parameter use", dict(compiled.audit.parameter_occurrences) == {"theta": 1})
 
         evaluated = evaluate_public_problem(
-            views.public_problem,
+            problem,
             spec,
             protocol=EvaluationProtocol(max_evals=8, restarts=1, seed=3),
-        ).receipt
+        ).result
         check("evaluator optimizes candidate", evaluated.valid and evaluated.best_energy is not None)
         check("evaluator owns resource counts", bool(evaluated.metrics))
         check("evaluator owns optimized parameters", bool(evaluated.optimized_parameter_binding))
@@ -149,6 +148,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "status", help="show hypotheses, candidates, evidence, and budget"
     )
     status_parser.add_argument("--run-dir", default=str(DEFAULT_RUN_DIR))
+    status_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="include complete internal branch records for debugging",
+    )
 
     result_parser = research_commands.add_parser(
         "result", help="show the accepted terminal scientific result"
@@ -178,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.action,
                 )
             elif args.research_command == "status":
-                result = research_cli.run_status(args.run_dir)
+                result = research_cli.run_status(args.run_dir, full=args.full)
             elif args.research_command == "result":
                 result = research_cli.run_result(args.run_dir)
             else:

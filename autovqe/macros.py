@@ -18,7 +18,7 @@ from qiskit.circuit import QuantumCircuit
 from qiskit.circuit.library import XXPlusYYGate
 from qiskit.quantum_info import Operator
 
-from .ansatz_ir import OperationSpec, ParameterExpression, ReferenceSpec
+from .ansatz_ir import OperationSpec, ParameterExpression
 
 
 AngleResolver = Callable[[ParameterExpression], Any]
@@ -37,7 +37,6 @@ class TrustedMacro:
 
     __slots__ = (
         "name",
-        "kind",
         "min_arity",
         "max_arity",
         "parameter_names",
@@ -47,7 +46,6 @@ class TrustedMacro:
         "description",
         "_operation_validator",
         "_operation_emitter",
-        "_reference_emitter",
         "_zero_probe",
     )
 
@@ -55,7 +53,6 @@ class TrustedMacro:
         self,
         *,
         name: str,
-        kind: str,
         min_arity: int,
         max_arity: int | None,
         parameter_names: tuple[str, ...] = (),
@@ -66,13 +63,9 @@ class TrustedMacro:
         operation_validator: Callable[[OperationSpec], None] | None = None,
         operation_emitter: Callable[[QuantumCircuit, OperationSpec, AngleResolver], None]
         | None = None,
-        reference_emitter: Callable[[QuantumCircuit, ReferenceSpec], None] | None = None,
         zero_probe: Callable[[], OperationSpec] | None = None,
     ) -> None:
-        if kind not in {"operation", "reference"}:
-            raise ValueError(f"invalid trusted macro kind: {kind}")
         object.__setattr__(self, "name", name)
-        object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "min_arity", min_arity)
         object.__setattr__(self, "max_arity", max_arity)
         object.__setattr__(self, "parameter_names", parameter_names)
@@ -82,7 +75,6 @@ class TrustedMacro:
         object.__setattr__(self, "description", description)
         object.__setattr__(self, "_operation_validator", operation_validator)
         object.__setattr__(self, "_operation_emitter", operation_emitter)
-        object.__setattr__(self, "_reference_emitter", reference_emitter)
         object.__setattr__(self, "_zero_probe", zero_probe)
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -103,8 +95,6 @@ class TrustedMacro:
             )
 
     def validate_operation(self, operation: OperationSpec) -> None:
-        if self.kind != "operation":
-            raise MacroValidationError(f"{self.name} is reference-only")
         if operation.macro != self.name:
             raise MacroValidationError(
                 f"operation names {operation.macro}, but validator is for {self.name}"
@@ -137,24 +127,6 @@ class TrustedMacro:
         if self._operation_emitter is None:
             raise MacroValidationError(f"{self.name} has no operation emitter")
         self._operation_emitter(circuit, operation, resolve_angle)
-
-    def validate_reference(self, reference: ReferenceSpec) -> None:
-        if self.kind != "reference":
-            raise MacroValidationError(f"{self.name} is not a reference macro")
-        if reference.macro != self.name:
-            raise MacroValidationError(
-                f"reference names {reference.macro}, but validator is for {self.name}"
-            )
-        # A reference lists repeated one-qubit applications.  The arity check is
-        # therefore performed for one target at a time.
-        if reference.qubits:
-            self._validate_arity(1, "reference")
-
-    def emit_reference(self, circuit: QuantumCircuit, reference: ReferenceSpec) -> None:
-        self.validate_reference(reference)
-        if self._reference_emitter is None:
-            raise MacroValidationError(f"{self.name} has no reference emitter")
-        self._reference_emitter(circuit, reference)
 
     def zero_probe(self) -> OperationSpec:
         if self._zero_probe is None:
@@ -233,11 +205,6 @@ def _emit_isotropic_exchange(
     circuit.rzz(2.0 * angle, left, right)
 
 
-def _emit_x_reference(circuit: QuantumCircuit, reference: ReferenceSpec) -> None:
-    for qubit in reference.qubits:
-        circuit.x(qubit)
-
-
 def _zero_operation(
     macro: str,
     qubits: tuple[int, ...],
@@ -255,7 +222,6 @@ def _zero_operation(
 TRUSTED_MACROS: Mapping[str, TrustedMacro] = MappingProxyType({
     "PauliRotation": TrustedMacro(
         name="PauliRotation",
-        kind="operation",
         min_arity=1,
         max_arity=None,
         parameter_names=("angle",),
@@ -271,7 +237,6 @@ TRUSTED_MACROS: Mapping[str, TrustedMacro] = MappingProxyType({
     ),
     "XYExchange": TrustedMacro(
         name="XYExchange",
-        kind="operation",
         min_arity=2,
         max_arity=2,
         parameter_names=("angle",),
@@ -283,7 +248,6 @@ TRUSTED_MACROS: Mapping[str, TrustedMacro] = MappingProxyType({
     ),
     "IsotropicExchange": TrustedMacro(
         name="IsotropicExchange",
-        kind="operation",
         min_arity=2,
         max_arity=2,
         parameter_names=("angle",),
@@ -292,14 +256,6 @@ TRUSTED_MACROS: Mapping[str, TrustedMacro] = MappingProxyType({
         description="exp[-i angle (XX + YY + ZZ)]",
         operation_emitter=_emit_isotropic_exchange,
         zero_probe=lambda: _zero_operation("IsotropicExchange", (0, 1)),
-    ),
-    "X": TrustedMacro(
-        name="X",
-        kind="reference",
-        min_arity=1,
-        max_arity=1,
-        description="prepare a computational-basis reference with X gates",
-        reference_emitter=_emit_x_reference,
     ),
 })
 
@@ -313,16 +269,10 @@ def get_trusted_macro(name: str) -> TrustedMacro:
         raise MacroValidationError(f"unknown or untrusted macro: {name!r}") from exc
 
 
-def trusted_macro_names(*, kind: str | None = None) -> tuple[str, ...]:
-    """List trusted macro names, optionally filtered by macro kind."""
+def trusted_macro_names() -> tuple[str, ...]:
+    """List the trusted variational macro names."""
 
-    if kind is not None and kind not in {"operation", "reference"}:
-        raise ValueError("kind must be 'operation', 'reference', or None")
-    return tuple(
-        name
-        for name, macro in TRUSTED_MACROS.items()
-        if kind is None or macro.kind == kind
-    )
+    return tuple(TRUSTED_MACROS)
 
 
 @lru_cache(maxsize=None)

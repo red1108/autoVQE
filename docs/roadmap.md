@@ -14,7 +14,8 @@ and useful feedback to the agent.
   and canonical circuit resources.
 - Evaluator-derived optimization, energy traces, parameter bindings, gate
   counts, and depth.
-- Exact normalized Pauli-commutator probes and reference-sector checks.
+- Exact normalized Pauli-commutator probes and evaluator-owned initial-sector
+  checks.
 - Conditional `XYExchange` and `IsotropicExchange` operations with mandatory
   symmetry and per-operation preservation evidence.
 - Closed symmetry, structure, and null-control hypothesis types.
@@ -24,7 +25,12 @@ and useful feedback to the agent.
 - Semantic duplicate detection that ignores cosmetic candidate changes.
 - Persistent branch lineage with positive and grounded-negative terminal
   decisions.
-- Local `research init`, `step`, `status`, and `result` commands.
+- Installed `uv run autovqe` command with `research init`, `step`, compact
+  `status` (and optional `--full`), and `result`.
+- Controller-derived probe definitions, evaluation stages, evidence IDs, and
+  terminal evidence selection.
+- Positive decisions that require a different-hypothesis competitor or control
+  evaluated with the same promotion protocol.
 
 ## Search quality
 
@@ -32,8 +38,8 @@ The first priority is to make each evaluator call more informative.
 
 1. Add evaluator-side gradient ranking for a bounded operator pool.
 2. Compare parameter-sharing variants under the same optimization allowance.
-3. Add controlled layer growth with explicit marginal energy and resource
-   improvement.
+3. Add controlled operation-sequence growth with explicit marginal energy and
+   resource improvement.
 4. Preserve a nondominated set over energy, objective calls, unique parameters,
    parameter occurrences, two-qubit gates, total gates, and depth.
 5. Add an anytime score based on best energy at fixed objective-call points.
@@ -52,7 +58,7 @@ New probes should return a bounded measurement, numerical tolerance, and cost.
 - Particle number, spin projection, total spin, seniority, and excitation-pool
   closure under an explicit fermion-to-qubit encoding.
 - Gauge constraints and local Gauss-law checks.
-- Reference-sector compatibility for each supported conserved quantity.
+- Initial-state sector compatibility for each supported conserved quantity.
 - Gradient and operator-pool measurements for ADAPT-style selection.
 
 No gate should be enabled merely because its name suggests a symmetry. Its
@@ -67,12 +73,12 @@ Candidate operations should be added only when they have:
 - identity at zero parameters;
 - a deterministic compiler implementation;
 - canonical resource accounting;
-- operation, locality, layer, and fan-out limits;
+- operation, locality, representation, and fan-out limits;
 - tests for both intended use and misuse.
 
 Potential additions include:
 
-- grouped Hamiltonian-variational layers;
+- grouped Hamiltonian-variational operation templates;
 - constraint-preserving QAOA mixers;
 - fermionic single, double, pair, and seniority-preserving excitations;
 - translation- or point-group-tied parameters;
@@ -84,6 +90,7 @@ These are research directions, not currently accepted operations.
 
 ## Optimizer policy
 
+- Keep the current COBYLA smoke and promotion protocols evaluator-owned.
 - Version fixed smoke and promotion settings independently from the candidate
   representation.
 - Compare all candidates at one stage with identical call, restart, and seed
@@ -103,8 +110,8 @@ These are research directions, not currently accepted operations.
 - Compare logical structure, canonical compilation, and declared-backend
   compilation without letting one view hide cost in another.
 - Add routing-aware penalties and disconnected-support diagnostics.
-- Test generic nonzero parameter bindings whenever simplification can depend on
-  numeric values.
+- Test deterministic nonzero parameter bindings whenever simplification can
+  depend on numeric values.
 
 ## Evaluation methodology
 
@@ -121,8 +128,7 @@ These are research directions, not currently accepted operations.
 ## Agent usability
 
 - Provide concise next-action diagnostics after rejected actions.
-- Add examples for every action type without embedding problem-specific
-  answers.
+- Keep examples for every action type free of problem-specific answers.
 - Offer machine-readable summaries of live branches and remaining budget.
 - Make `research result` easy to consume while keeping every value tied to an
   evaluator computation.

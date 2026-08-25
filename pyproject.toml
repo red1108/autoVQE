@@ -1,7 +1,11 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "autovqe"
 version = "0.1.0"
-description = "Tiny hardware-aware VQE automation harness"
+description = "Hamiltonian-to-ansatz research harness for variational quantum eigensolvers"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -22,10 +26,19 @@ dependencies = [
     "scipy>=1.15",
 ]
 
+[project.scripts]
+autovqe = "autovqe.harness:main"
+
 [project.urls]
 Homepage = "https://github.com/red1108/autoVQE"
 Repository = "https://github.com/red1108/autoVQE"
 Issues = "https://github.com/red1108/autoVQE/issues"
 
-[tool.uv]
-package = false
+[tool.hatch.build]
+exclude = [
+    "/.autovqe-runtime/",
+    "/.codex/",
+    "/.venv/",
+    "/solve_runs/",
+    "/user_problem/",
+]

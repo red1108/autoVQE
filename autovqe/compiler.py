@@ -105,7 +105,6 @@ class AnsatzAudit:
     spec_node_counts: Mapping[str, int]
     fixed_literals: tuple[FixedLiteral, ...]
     logical_macros: Mapping[str, int]
-    layers: int
     operations: int
 
     def __post_init__(self) -> None:
@@ -138,10 +137,9 @@ class AnsatzAudit:
         spec_nodes = _integer(self.spec_nodes, "audit.spec_nodes")
         if spec_nodes < 0 or spec_nodes != sum(node_counts.values()):
             raise AnsatzCompilerError("audit.spec_nodes must equal the node-count sum")
-        layers = _integer(self.layers, "audit.layers")
         operations = _integer(self.operations, "audit.operations")
-        if layers < 0 or operations < 0:
-            raise AnsatzCompilerError("audit layer and operation counts cannot be negative")
+        if operations < 0:
+            raise AnsatzCompilerError("audit operation count cannot be negative")
 
         object.__setattr__(self, "unique_trainable_params", unique)
         object.__setattr__(self, "trainable_parameter_names", names)
@@ -151,7 +149,6 @@ class AnsatzAudit:
         object.__setattr__(self, "spec_node_counts", MappingProxyType(node_counts))
         object.__setattr__(self, "fixed_literals", literals)
         object.__setattr__(self, "logical_macros", MappingProxyType(macros))
-        object.__setattr__(self, "layers", layers)
         object.__setattr__(self, "operations", operations)
 
     @staticmethod
@@ -185,7 +182,6 @@ class AnsatzAudit:
             "spec_node_counts": dict(self.spec_node_counts),
             "fixed_literals": [literal.to_dict() for literal in self.fixed_literals],
             "logical_macros": dict(self.logical_macros),
-            "layers": self.layers,
             "operations": self.operations,
         }
 
@@ -201,7 +197,6 @@ class AnsatzAudit:
             "spec_node_counts",
             "fixed_literals",
             "logical_macros",
-            "layers",
             "operations",
         }
         unknown = set(payload) - allowed
@@ -230,7 +225,6 @@ class AnsatzAudit:
             spec_node_counts=payload["spec_node_counts"],
             fixed_literals=tuple(FixedLiteral.from_dict(item) for item in literals_payload),
             logical_macros=payload["logical_macros"],
-            layers=payload["layers"],
             operations=payload["operations"],
         )
 
@@ -321,6 +315,42 @@ def _expression_literals(expression: ParameterExpression, path: str) -> list[Fix
     return literals
 
 
+def _matrix_rank(rows: Sequence[Sequence[float]], *, tolerance: float = 1e-12) -> int:
+    matrix = [list(map(float, row)) for row in rows]
+    if not matrix:
+        return 0
+    width = len(matrix[0])
+    rank = 0
+    for column in range(width):
+        pivot = next(
+            (
+                row
+                for row in range(rank, len(matrix))
+                if abs(matrix[row][column]) > tolerance
+            ),
+            None,
+        )
+        if pivot is None:
+            continue
+        matrix[rank], matrix[pivot] = matrix[pivot], matrix[rank]
+        scale = matrix[rank][column]
+        matrix[rank] = [value / scale for value in matrix[rank]]
+        for row in range(rank + 1, len(matrix)):
+            factor = matrix[row][column]
+            if abs(factor) <= tolerance:
+                continue
+            matrix[row] = [
+                value - factor * pivot_value
+                for value, pivot_value in zip(
+                    matrix[row], matrix[rank], strict=True
+                )
+            ]
+        rank += 1
+        if rank == len(matrix):
+            break
+    return rank
+
+
 def _validate_operation(
     operation: OperationSpec,
     *,
@@ -374,7 +404,7 @@ def _validate_operation(
 
 
 def validate_ansatz(spec: AnsatzSpec | Mapping[str, Any]) -> AnsatzAudit:
-    """Validate a typed ansatz and derive a resource/provenance audit.
+    """Validate a typed ansatz and derive a representation/resource audit.
 
     The returned counts are computed from the complete IR.  Candidate-provided
     counts or descriptions are never accepted as inputs.
@@ -387,42 +417,25 @@ def validate_ansatz(spec: AnsatzSpec | Mapping[str, Any]) -> AnsatzAudit:
     fixed_literals: list[FixedLiteral] = []
     logical_macros: Counter[str] = Counter()
 
-    if checked.reference is not None:
-        if not checked.reference.qubits:
-            raise AnsatzCompilerError(
-                "/reference must contain at least one X target; use reference=None "
-                "for the all-zero reference"
-            )
-        _check_qubits(checked.reference.qubits, checked.num_qubits, "/reference/qubits")
-        try:
-            reference_macro = get_trusted_macro(checked.reference.macro)
-            reference_macro.validate_reference(checked.reference)
-        except MacroValidationError as exc:
-            raise AnsatzCompilerError(f"/reference: {exc}") from exc
-        logical_macros[checked.reference.macro] += len(checked.reference.qubits)
-
     operation_count = 0
     expression_count = 0
     term_count = 0
-    for layer_index, layer in enumerate(checked.layers):
-        if not layer.operations:
-            raise AnsatzCompilerError(f"/layers/{layer_index} cannot be empty")
-        for operation_index, operation in enumerate(layer.operations):
-            path = f"/layers/{layer_index}/operations/{operation_index}"
-            _validate_operation(
-                operation,
-                declared=declared,
-                num_qubits=checked.num_qubits,
-                path=path,
-                occurrences=occurrences,
-                literals=fixed_literals,
-            )
-            logical_macros[operation.macro] += 1
-            operation_count += 1
-            expression_count += len(operation.parameters)
-            term_count += sum(
-                len(expression.terms) for expression in operation.parameters.values()
-            )
+    for operation_index, operation in enumerate(checked.operations):
+        path = f"/operations/{operation_index}"
+        _validate_operation(
+            operation,
+            declared=declared,
+            num_qubits=checked.num_qubits,
+            path=path,
+            occurrences=occurrences,
+            literals=fixed_literals,
+        )
+        logical_macros[operation.macro] += 1
+        operation_count += 1
+        expression_count += len(operation.parameters)
+        term_count += sum(
+            len(expression.terms) for expression in operation.parameters.values()
+        )
 
     unused = tuple(name for name in declared_names if occurrences[name] == 0)
     if unused:
@@ -432,11 +445,22 @@ def validate_ansatz(spec: AnsatzSpec | Mapping[str, Any]) -> AnsatzAudit:
         )
 
     used_names = tuple(name for name in declared_names if occurrences[name] > 0)
+    parameter_index = {name: index for index, name in enumerate(used_names)}
+    incidence_rows: list[list[float]] = []
+    for operation in checked.operations:
+        for expression in operation.parameters.values():
+            row = [0.0] * len(used_names)
+            for term in expression.terms:
+                row[parameter_index[term.parameter.name]] = float(term.coefficient)
+            incidence_rows.append(row)
+    if _matrix_rank(incidence_rows) != len(used_names):
+        raise AnsatzCompilerError(
+            "declared trainable parameters must be linearly independent in the "
+            "circuit angles"
+        )
     node_counts = {
         "ansatz": 1,
         "parameter_declaration": len(checked.parameters),
-        "reference": int(checked.reference is not None),
-        "layer": len(checked.layers),
         "operation": operation_count,
         "expression": expression_count,
         "parameter_term": term_count,
@@ -450,7 +474,6 @@ def validate_ansatz(spec: AnsatzSpec | Mapping[str, Any]) -> AnsatzAudit:
         spec_node_counts=node_counts,
         fixed_literals=tuple(fixed_literals),
         logical_macros=dict(logical_macros),
-        layers=len(checked.layers),
         operations=operation_count,
     )
 
@@ -475,32 +498,16 @@ def compile_ansatz(spec: AnsatzSpec | Mapping[str, Any]) -> CompiledAnsatz:
     }
     circuit = QuantumCircuit(checked.num_qubits, name=checked.name)
 
-    if checked.reference is not None:
+    for operation_index, operation in enumerate(checked.operations):
         try:
-            get_trusted_macro(checked.reference.macro).emit_reference(
-                circuit, checked.reference
+            get_trusted_macro(operation.macro).emit_operation(
+                circuit,
+                operation,
+                lambda expression: _resolve_expression(expression, parameters),
             )
         except MacroValidationError as exc:
-            raise AnsatzCompilerError(f"failed to compile reference: {exc}") from exc
-
-    for layer_index, layer in enumerate(checked.layers):
-        for operation_index, operation in enumerate(layer.operations):
-            try:
-                get_trusted_macro(operation.macro).emit_operation(
-                    circuit,
-                    operation,
-                    lambda expression: _resolve_expression(expression, parameters),
-                )
-            except MacroValidationError as exc:
-                raise AnsatzCompilerError(
-                    f"failed to compile /layers/{layer_index}/operations/"
-                    f"{operation_index}: {exc}"
-                ) from exc
+            raise AnsatzCompilerError(
+                f"failed to compile /operations/{operation_index}: {exc}"
+            ) from exc
 
     return CompiledAnsatz(circuit=circuit, parameters=parameters, audit=audit)
-
-
-# Explicit aliases make evaluator integration readable without trusting a
-# candidate-provided audit implementation.
-audit_ansatz = validate_ansatz
-compile_spec = compile_ansatz

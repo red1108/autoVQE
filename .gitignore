@@ -9,9 +9,13 @@
 /.coverage
 /htmlcov/
 *.egg-info/
+/build/
+/dist/
 
-# Local AutoVQE runs
+# User-supplied problems and local AutoVQE runs
+/user_problem/
 /.autovqe-runtime/
+/solve_runs/
 
 # Local environment files
 /.env

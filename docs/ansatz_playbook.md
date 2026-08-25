@@ -1,138 +1,126 @@
 # Ansatz Playbook
 
-Use this playbook to form and test hypotheses, not to assign an ansatz label
-from a Hamiltonian pattern. The mechanical observation contains evidence; an
-evaluator-produced probe result determines whether one particular claim is supported.
+Use this playbook to turn Hamiltonian structure into falsifiable experiments.
+A pattern suggests a branch; only controller-produced probes and evaluations
+support or refute it.
 
-## Start from observations
+## Read the problem mechanically
 
-Before proposing a hypothesis, record:
+Start from:
 
-- Pauli terms and coefficient scales;
-- locality distribution and two-body support edges;
-- single-letter `X`/`Y`/`Z` counts and complex coefficients;
-- declared encoding and sector values, if any;
-- the public computational-basis preparation hint, if any;
-- backend basis gates and coupling map.
+- Pauli support, locality, signs, and coefficient scales;
+- repeated edges, motifs, commuting groups, and graph structure;
+- declared encoding and sector metadata;
+- the evaluator-owned computational-basis `initial_state_hint`, if present;
+- basis gates and coupling constraints.
 
-The MVP fixes one indexing dialect. Full Hamiltonian/generator labels use
-Qiskit's display order (rightmost character is q0); occupation tuple index
-`q` is qubit `q`; and a `PauliRotation` local word is paired left-to-right
-with its explicit `qubits` list. For example, `qubits: [0, 1]` with local
-`pauli: "XY"` means X on q0 and Y on q1, whose full Qiskit label is `YX`.
-Other `EncodingSpec.qubit_order` values are rejected rather than guessed.
+Full Hamiltonian and generator labels use Qiskit's display order, so the
+rightmost character acts on qubit 0. Within a `PauliRotation`, the local Pauli
+word is paired left-to-right with its explicit qubit list. Thus
+`qubits: [0, 1]` and `pauli: "XY"` means X on q0 and Y on q1; the full-width
+Qiskit label is `YX`.
 
-Do not use a fixture name, a `model_class` label, a recommendation, an exact
-reference energy/state, or previous learned angles as evidence. A declared
-sector is a claim supplied with the problem, not proof that every Hamiltonian
-term, reference, or proposed circuit preserves it.
+An encoding or sector declaration is context, not a conservation proof. An
+initial-state hint is applied by the evaluator and is not candidate circuit
+structure. File names, model labels, expected answers, and previously learned
+angles are not evidence.
 
-## Current typed macro allowlist
+## Keep the search language small
 
-The trusted research compiler currently resolves exactly these names:
+The accepted variational macros are exactly:
 
-| Macro | Kind/arity | Parameters/options | Trusted meaning |
-| --- | --- | --- | --- |
-| `PauliRotation` | variational operation, one or more qubits | `angle`; string option `pauli` with one active `X/Y/Z` per listed qubit | `exp(-i angle P)` via basis changes, a CNOT parity ladder, and `RZ(2 angle)` |
-| `XYExchange` | variational operation, exactly two qubits | `angle`; no options | `exp[-i angle(XX + YY)]`, lowered as Qiskit `XXPlusYYGate(4 * angle, 0)` |
-| `IsotropicExchange` | variational operation, exactly two qubits | `angle`; no options | `exp[-i angle(XX + YY + ZZ)]` via `RXX/RYY/RZZ` |
-| `X` | reference-only, repeated one-qubit targets | no variational parameter | Explicit computational-basis preparation |
+| Macro | Generator | Use |
+| --- | --- | --- |
+| `PauliRotation` | `P` | `exp(-i angle P)` for an active local Pauli word |
+| `XYExchange` | `XX + YY` | two-qubit exchange after exact-symmetry evidence |
+| `IsotropicExchange` | `XX + YY + ZZ` | two-qubit isotropic exchange after exact-symmetry evidence |
 
-There is no public macro registration hook. Unknown names, matrices, callables,
-opaque Qiskit instructions, duplicate/out-of-range qubits, and unsupported
-options are rejected. Public backend basis names are lowering/accounting
-targets only; they never expand this macro allowlist.
+There is no candidate preparation macro, secondary circuit grouping, custom
+gate, matrix, or registration hook. Backend gate names are compilation
+targets, not additions to this allowlist.
 
-The allowlist is closed but not narrow enough to be a complete search policy.
-The controller caps a candidate at 256 logical operations, 128 unique
-parameters, 4096 IR nodes, and fan-out 64 for any one parameter. A
-`PauliRotation` above locality two must exactly match a declared Hamiltonian
-term, but arbitrary one/two-body active words remain available. Smoke/promotion
-also apply fixed canonical conservative resource caps, taking the metric-wise
-maximum of template and generic-worst views; per-problem macro/native-backend
-profiles remain future work.
+Every variational macro is the identity at zero. `PauliRotation` above
+locality two must match a supplied Hamiltonian term. The exchange gates are
+admitted only when the candidate cites a supported exact-symmetry probe, every
+concrete operation preserves every cited charge, and each special gate touches
+at least `1e-3` of the active norm of one charge. A spectator symmetry or an
+epsilon-weighted touching term is not a gate certificate; conditioned
+Hamiltonian residual and sector variance must remain exact as well.
 
-## Typed IR rules
+This boundary lets the agent exploit measured physical structure without
+turning the ansatz into an unrestricted universal circuit or hiding a fixed
+numeric answer.
 
-An `AnsatzSpec` contains:
+## Write a flat typed candidate
 
-- `version` (currently `1`), `name`, and `num_qubits`;
-- a unique list of trainable parameter names;
-- an optional `X` reference preparation;
-- ordered layers of macro operations;
-- affine parameter expressions.
-
-The compiler/evaluator, not the candidate, derives:
-
-- unique trainable parameters and their names;
-- every parameter occurrence;
-- unused parameters;
-- fixed literals and their roles/paths;
-- macro, layer, operation, expression, and IR-node counts;
-- declared-backend and canonical template/generic-worst/final gate counts and
-  depth;
-- energy and best-energy traces.
-
-Parameter sharing is legal and scientifically useful, but it is not a way to
-hide circuit size. A shared parameter is counted once under
-`unique_trainable_params` and once per gate use under
-`parameter_occurrences`; operations and physical gates are counted
-independently. More than 64 uses of one parameter fails audit, so tying every
-gate to a single reported parameter is bounded explicitly.
-
-All declared parameters must occur. A variational angle must depend on a
-trainable parameter and be zero when all parameters are zero. Constant-only
-rotations and fixed offsets are rejected. At controller audit, coefficient
-scales outside `{-2, -1, -0.5, 0.5, 1, 2}` and all numeric options are rejected.
-This blocks hidden learned angles but also intentionally limits
-Hamiltonian-coefficient-scaled schedules in the MVP.
-
-Candidate metadata must set the enforcement value implied by its claim:
-`preserve` for `exact_pauli_symmetry`, `unconstrained` for
-`ansatz_structure`, and `diagnostic` for `null_control`. For `preserve`, the
-audit computes the normalized commutator of every logical operation generator
-with the claim's charge and checks the explicit zero-parameter reference's
-normalized charge variance. A residual or variance above `1e-10` fails audit.
-The reference must exactly reproduce the public occupation hint and cannot be
-introduced when no hint exists.
-
-`XYExchange` and `IsotropicExchange` are conditionally available: the parent
-must be a controller-`SUPPORTED` `exact_pauli_symmetry` hypothesis, and every
-operation must still pass the charge-commutator audit. Their allowlist entries
-and conservation-suggestive names are implementation availability, not
-physical evidence. Auto-admitted structure/control claims cannot authorize
-them.
-
-## Symmetry is a probeable hypothesis
-
-Use the loop:
-
-```text
-observe pattern/declaration
-  -> name a candidate generator Q
-  -> request [H, Q] probe
-  -> design operations predicted to preserve Q
-  -> audit operations + public reference against Q
-  -> smoke/promote
-  -> revise or retire when evidence disagrees
-```
-
-The external research controller currently offers one algebraic probe request:
-`normalized_commutator` for an `exact_pauli_symmetry` claim. The claim must
-contain exactly `kind` and a machine-readable `generator`. Structure and null
-control claims use the closed schemas `{"kind":"ansatz_structure",
-"family":"..."}` and `{"kind":"null_control"}`; the controller admits them with
-an explicit non-algebraic marker rather than a physics certificate.
-
-### Exact commutator
+An `AnsatzSpec` contains version, name, qubit count, unique scalar parameters,
+a flat ordered `operations` array, and affine angle expressions:
 
 ```json
 {
-  "type": "request_probe",
-  "hypothesis_id": "total_z",
-  "probe_id": "comm_total_z",
-  "probe": {
-    "type": "normalized_commutator",
+  "version": 1,
+  "name": "two-qubit-xx",
+  "num_qubits": 2,
+  "parameters": ["theta"],
+  "operations": [
+    {
+      "macro": "PauliRotation",
+      "qubits": [0, 1],
+      "parameters": {
+        "angle": {
+          "terms": [
+            {"parameter": "theta", "coefficient": 1.0}
+          ],
+          "constant": 0.0
+        }
+      },
+      "options": {"pauli": "XX"}
+    }
+  ]
+}
+```
+
+The shorter `{"parameter": "theta"}` angle form is equivalent. Each angle
+must depend on a declared parameter and vanish at the origin. Parameter sharing
+is useful when the hypothesis predicts it, but it does not make repeated gates
+free: AutoVQE separately counts unique parameters, occurrences, logical
+operations, compiled gates, two-qubit gates, and depth. One parameter may
+occur at most 64 times.
+
+The controller derives enforcement from the branch and evidence:
+
+- `preserve` when the candidate cites supported symmetry probe IDs;
+- `unconstrained` for a structural family;
+- `diagnostic` for a null control.
+
+Candidate metadata may contain only text `prediction`, `falsifier`, and
+`rationale` fields. Before submitting a promotable candidate, preregister a concrete `prediction`
+or `falsifier`. For example: “the selected edge rotations beat their
+zero-angle baseline under smoke while staying below the resource cap.” Do not
+put a claimed energy, optimized angle, gate count, optimizer, or initial value
+in metadata.
+
+## Treat symmetry as research
+
+The productive sequence is:
+
+```text
+observe a pattern
+  -> propose an exact generator Q
+  -> request the controller's [H,Q] probe
+  -> choose operations predicted to preserve Q
+  -> audit every operation and the prepared initial sector
+  -> optimize only after those checks pass
+```
+
+For example:
+
+```json
+{
+  "type": "propose_hypothesis",
+  "hypothesis_id": "total-z",
+  "claim": {
+    "kind": "exact_pauli_symmetry",
     "generator": {
       "type": "global_pauli_sum",
       "pauli": "Z",
@@ -142,175 +130,147 @@ an explicit non-algebraic marker rather than a physics certificate.
 }
 ```
 
-This computes a scale-normalized Pauli-coefficient norm of `[H,Q]`. “Exact”
-means residual at most `1e-10`. The probe rejects a zero/identity generator and
-a generator that is merely a trivial copy of `H`. Coefficients must be finite
-and real, and active generator norm must be at least `1e-8`.
-
-Generator JSON is also structurally bounded. A `pauli_sum` has exactly `type`
-and 1–256 `terms`; labels must be unique, valid, and full width. Each term has
-exactly `pauli` and optional `coeff`, where `coeff` is a finite real JSON number
-with magnitude at most `1e6`. `global_pauli_sum` uses `pauli` and
-`orbit_pauli_sum` uses `seed`; both allow only `X/Y/Z`, optional
-`selector: "all_sites"`, strict fields, and at most 256 generated terms.
-
-### Public-reference moments are audit-internal
-
-`reference_moments` is an evaluator primitive, not an accepted external
-`request_probe` type. When auditing an exact-symmetry candidate, the controller
-computes mean and normalized variance on the required explicit public
-reference. Variance at most `1e-10` passes. Division by squared active generator
-norm prevents a tiny coefficient from forcing a pass.
-
-The probe alone does not prove that a submitted circuit preserves the charge.
-That requires `metadata.enforcement: "preserve"` at candidate audit, which
-checks each operation and the explicit reference against the same
-machine-readable exact Pauli charge. Approximate-symmetry, group action,
-projector/Casimir, and fermionic algebra probes remain future work.
-
-## Candidate hypotheses by observed structure
-
-The table suggests a hypothesis and a cheap attempted falsification. It does
-not select a winner.
-
-| Observation | Hypothesis to test | Current encoding | Important caveat |
-| --- | --- | --- | --- |
-| Z-only terms | Alternating cost rotations and noncommuting single-qubit mixers create useful motion | `PauliRotation` for Z words and one-qubit X/Y words | No named QAOA or constraint-mixer macro; a generic mixer may leave a required feasible sector |
-| `ZZ` plus transverse `X` | A term-factorized TFIM/HVA schedule matches the operator split | `PauliRotation` per term | Counterdiabatic/operator-pool selection is not implemented |
-| Matched edge `XX+YY` | Exchange moves preserve total Z/Hamming weight | `XYExchange`, after probing global Z sum | Qubit Hamming weight is not automatically fermionic particle/spin/seniority preservation |
-| Matched edge `XX+YY+ZZ` | Isotropic edge evolution respects a Heisenberg-like structure | `IsotropicExchange`, only after a matching exact charge probe | Full SU(2) evidence requires more than one charge; the controller has no Casimir/group probe |
-| General Pauli support | Selected term rotations form a useful HVA/operator pool | `PauliRotation` | Applying every Hamiltonian term can be large, overly expressive, and symmetry-breaking |
-| No robust structural claim | A shallow typed control tests whether the hypothesis adds value | Small allowlisted rotations under `null_control` | It is diagnostic and cannot be promoted; the MVP has no Pareto/holdout comparison |
-
-For a putative U(1) symmetry, probe a candidate total-Z generator and the
-reference sector before choosing `XYExchange`. For a putative SU(2)-like model,
-separate exact-symmetry hypotheses/commutator probes for global X, Y, and Z are
-stronger evidence than a single label, but they still do not constitute a
-non-Abelian representation audit.
-
-For chemistry, do not equate an `initial_state_hint` with a Hartree–Fock proof
-or `XYExchange` with UCC. The current IR lacks fermionic single/double,
-spin-adapted, and pair/seniority-preserving macros and lacks a fermion-to-qubit
-algebra probe. A chemistry-specific claim may therefore be scientifically
-reasonable but not enforceable by the MVP typed boundary.
-
-For lattice gauge, point-group, translation, permutation, or other constraint
-structure, document the hypothesis but do not claim dedicated enforcement. The
-generic `preserve` audit can cover an exactly encoded Pauli-sum charge, but
-Gauss-law-specific moves, group projection/twirling, orbit parameter tying, and
-non-Abelian symmetry-adapted blocks are not in the current allowlist.
-
-## Minimal candidate example
-
-This candidate exposes one trainable Pauli rotation and its explicit reference
-preparation:
+The follow-up action is deliberately minimal:
 
 ```json
-{
-  "version": 1,
-  "name": "two_qubit_xx",
-  "num_qubits": 2,
-  "parameters": ["theta"],
-  "reference": {
-    "macro": "X",
-    "qubits": [0]
-  },
-  "layers": [
-    {
-      "name": "move",
-      "operations": [
-        {
-          "macro": "PauliRotation",
-          "qubits": [0, 1],
-          "parameters": {
-            "angle": {
-              "terms": [
-                { "parameter": "theta", "coefficient": 1.0 }
-              ],
-              "constant": 0.0
-            }
-          },
-          "options": {
-            "pauli": "XX"
-          }
-        }
-      ]
-    }
-  ]
-}
+{"type": "request_probe", "hypothesis_id": "total-z"}
 ```
 
-The shorter `{"parameter": "theta"}` angle form is equivalent. Use explicit
-parameter sharing only when it is part of the hypothesis; do not report only
-the unique count while omitting operation/occurrence/gate counts.
-Place the claim-required `enforcement` value in the surrounding
-`submit_candidate.metadata`, not inside this strict `spec` object. Audit also
-requires at least one logical operation and one trainable parameter. Before
-evaluation, add a concrete `prediction` or `falsifier` to metadata for any
-candidate that may be committed.
+The controller reuses the claim's generator and creates the evidence ID. It
+computes the bounded normalized commutator once. Residual at most `1e-10`
+supports this particular exact Pauli charge.
 
-## Promotion evidence
+Support for `[H,Q]=0` still does not prove that a circuit preserves `Q`. Audit
+prepares the problem's initial state, checks its charge variance, and measures
+the normalized commutator of every instantiated operation generator with `Q`.
+An exchange-like name never substitutes for this test.
 
-The current stage sequence is:
+Keep symmetry evidence composable. A candidate can remain under a structural
+hypothesis such as an ordering or graph-coloring rule while listing one or more
+supported probe IDs in `symmetry_evidence_ids`. Audit enforces every cited
+constraint. This also lets a candidate cite several conserved components
+without pretending that symmetry is the entire design hypothesis.
 
-1. `audit`: typed compile plus fixed-literal policy;
-2. `smoke`: fixed COBYLA protocol with up to 32 calls, one restart, seed 7;
-3. `promotion`: fixed COBYLA protocol with up to 96 calls, three restarts, seed
-   997.
+### U(1), SU(2), and other structure
 
-Smoke and promotion require improvement over the zero-parameter candidate by
-at least `max(1e-6, 1e-6 * abs(baseline_energy))`. Promotion additionally
-requires a prior passed smoke and energy no worse than its best energy plus
-`5e-4`; null controls are blocked.
+Matched `XX + YY` edges motivate testing a total-Z/U(1)-like charge and, if it
+passes, an `XYExchange` circuit. Qubit Hamming-weight conservation does not by
+itself establish fermionic particle number, spin, or seniority under an
+unspecified encoding.
 
-Both stages transpile the symbolic template and three deterministic
-evaluator-owned generic bindings on the all-to-all canonical `{rz,sx,x,cx}`
-target. For each metric, the controller takes
-`canonical_conservative_* = max(canonical_template_*,
-canonical_generic_worst_*)`; this view must have at most 512 two-qubit gates,
-2048 total gates, and depth 1024. Inspect `canonical_template_*`,
-`canonical_generic_worst_*`, and `canonical_final_*` alongside declared-backend
-metrics and the controller-owned conservative resource policy. Passing these
-local gates is not proof of:
+Matched `XX + YY + ZZ` edges motivate isotropic exchange. A single conserved
+component is not evidence for full SU(2). With the current Pauli-sum probes,
+test global X, Y, and Z as separate exact claims when those generators are part
+of the physical argument. Casimir, representation-sector, and general
+non-Abelian certification are not yet implemented.
 
-- improvement over competing ansatz baselines;
-- Pareto efficiency in energy/resources;
-- a strong anytime curve;
-- generalization to other or hidden Hamiltonians;
-- closeness to an exact reference energy.
+For chemistry, `initial_state_hint` is not a Hartree–Fock certificate, and
+`XYExchange` is not UCC. Fermionic single/double, pair-, spin-, and
+seniority-preserving blocks require future typed operations and matching
+encoding-aware probes.
 
-Record those limitations in the candidate metadata/final report. Do not infer
-more than the recorded evaluation establishes.
+Translation, permutation, point-group, lattice-gauge, and local-constraint
+patterns can still motivate structural hypotheses. Do not claim dedicated
+preservation until the corresponding probe and operation audit exist.
 
-A passed promotion cannot be revised or retired: it remains live until an
-evidence-gated commit, and therefore prevents `close_negative`. Commit cites
-the promotion plus an evaluated competitor/control or a documented
-non-dominance basis. This preserves a successful result instead of erasing it
-to manufacture a negative terminal.
+## Choose experiments from observed structure
 
-Use `research status` to review branch evidence and `research result` only
-after a terminal decision. Do not treat edits to local run files as new
-scientific evidence.
+| Observation | Branch worth testing | Current expression | Cheap falsifier or caveat |
+| --- | --- | --- | --- |
+| Z-only cost | Alternating cost and noncommuting mixer rotations | `PauliRotation` | A generic mixer can leave a required feasible sector |
+| `ZZ` plus transverse `X` | Term-factorized TFIM/HVA order | `PauliRotation` per selected term | Try a smaller ordering before adding every term |
+| Matched `XX + YY` edges | Total-Z-preserving exchange | `XYExchange` after exact probe | Audit every edge; do not infer fermionic symmetry |
+| Matched `XX + YY + ZZ` edges | Isotropic edge evolution | `IsotropicExchange` after exact probe | Test required generators; one charge is not SU(2) |
+| General Pauli support | Selected-term HVA/operator pool | `PauliRotation` | Applying all terms may be costly and overly expressive |
+| Weak structural evidence | Zero-operation comparison control | empty typed `null_control` candidate | Diagnostic only; it cannot promote |
+
+Do not make every branch a symmetry branch. Ordering, support selection,
+parameter sharing, graph coloring, and shallow controls are legitimate
+structural experiments when their predictions are explicit.
+
+## Use the closed feedback cycle
+
+The controller chooses the next stage whenever the agent sends:
+
+```json
+{"type": "evaluate_candidate", "candidate_id": "candidate-id"}
+```
+
+The fixed sequence is:
+
+1. **Audit** — compile, apply the initial preparation, check literals,
+   invariants, and conservative resources before optimization.
+2. **Smoke** — fixed COBYLA, at most 32 objective calls, one restart, seed 7.
+3. **Promotion** — fixed COBYLA, at most 96 calls, three restarts, seed 997.
+
+Audit includes deterministic nonzero audit bindings, so parameter sharing or
+a special value cannot hide gate count or depth. Current caps are 512 two-qubit
+gates, 2048 total gates, and depth 1024, using the worst of backend-routed and
+canonical transpilation results.
+
+Failed candidates are evidence. Use the failure to reduce an operator set,
+change an ordering or sharing pattern, revise the physical claim, or retire the
+branch. A revision gets a new ID and a new preregistered prediction while the
+old result stays visible. Cosmetic renaming of the same physical family does
+not earn another optimizer run.
+
+Useful responses include:
+
+| Feedback | Productive next step |
+| --- | --- |
+| Exact charge is refuted | Retire it or test a physically motivated different charge |
+| Prepared state has charge variance | Reconsider the symmetry branch; the candidate cannot change preparation |
+| Operation breaks a supported charge | Replace the operation or use an unconstrained structural branch |
+| Resource audit fails | Reduce operation count/locality/fan-out before smoke |
+| Smoke does not beat zero angle | Retire or make one motivated structural revision |
+| Promotion regresses | Treat the family as unstable under the fixed optimizer policy |
+
+## Compare before deciding
+
+A promoted candidate cannot be committed in isolation. Before promotion,
+bring a candidate from a different primary hypothesis through smoke. The
+controller reserves enough budget for both fixed promotion evaluations and
+requires the reserved comparison immediately after the first promotion. It
+compares only those equal-fidelity records. Energy-tied comparisons include
+unique trainable parameters as well as gates and depth. Then request:
+
+```json
+{"type": "commit", "candidate_id": "candidate-id"}
+```
+
+For a negative ending, explicitly revise or retire every open hypothesis and
+candidate first. Each non-control branch needs a refuted probe, a valid failed
+smoke/promotion, or a fair comparison that dominates a promoted candidate.
+For a failed numerical run to count, the sampled objective span normalized by
+the non-identity Hamiltonian norm must be at least `1e-6`. Establish either
+promotion-depth adverse evidence or adverse evidence in two independent
+`ansatz_structure` root lineages. A constant Hamiltonian is the only flat
+exception. A refuted symmetry, compile audit, null control, or phase-only
+candidate cannot satisfy this floor. Then request `close_negative` with a
+grounded reason. The controller derives evidence coverage, but it does not
+retire branches for the agent.
+
+Use compact `research status` for routine feedback and `research status
+--full` for complete history. Use `research result` only after a terminal
+decision and report the optimized binding only from that output.
+
+Promotion proves only the local fixed rule. It does not prove exact
+ground-state accuracy, Pareto optimality, an anytime advantage, or
+generalization. State explicitly when no independent reference score was
+provided.
 
 ## Planned additions
 
-- versioned macro profiles and native-backend/per-profile resource ceilings;
-- named HVA/QAOA and constraint-preserving mixer templates;
-- fermionic/UCC and pair/seniority-preserving chemistry blocks;
-- extensions of exact candidate preservation to approximate/group/non-Abelian
-  and fermionic charges;
-- approximate, group/permutation, non-Abelian, fermionic, and gauge-law probes;
-- ADAPT-style gradient/operator ranking under a fixed evaluator budget;
-- public/hidden generalization evaluation, Pareto retention, and anytime
-  scoring.
+- approximate, group/permutation, non-Abelian, fermionic, and gauge probes;
+- fermionic/UCC, pair/seniority, and constraint-preserving typed operations;
+- evaluator-side operator ranking and controlled ansatz growth;
+- Pareto, anytime, noise-aware, and held-out evaluation protocols.
 
-Until implemented, these belong in a hypothesis or roadmap—not in a success
-claim.
+Until implemented, these are research directions rather than success claims.
 
-## Background references
+## Background
 
-- Hamiltonian variational ansatz: https://arxiv.org/abs/1507.08969
-- QAOA: https://arxiv.org/abs/1411.4028
-- ADAPT-VQE: https://arxiv.org/abs/1812.11173
-- Qubit-excitation ADAPT-VQE study:
-  https://www.nature.com/articles/s42005-021-00730-0
+- [Hamiltonian variational ansatz](https://arxiv.org/abs/1507.08969)
+- [QAOA](https://arxiv.org/abs/1411.4028)
+- [ADAPT-VQE](https://arxiv.org/abs/1812.11173)
+- [Qubit-excitation ADAPT-VQE study](https://www.nature.com/articles/s42005-021-00730-0)

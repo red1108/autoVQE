@@ -8,17 +8,15 @@ from qiskit.quantum_info import SparsePauliOp
 
 from autovqe.ansatz_ir import (
     AnsatzSpec,
-    LayerSpec,
     OperationSpec,
     ParameterExpression,
-    ReferenceSpec as AnsatzReferenceSpec,
 )
 from autovqe.contracts import (
     BackendSpec,
     EncodingSpec,
+    InitialStateSpec,
     PauliTerm,
     PublicProblem,
-    ReferenceSpec,
     SectorSpec,
 )
 from autovqe.controller import ControllerError, ResearchController
@@ -38,34 +36,22 @@ from autovqe.probes import (
 
 def rotation_spec(
     coefficients: tuple[float, ...] = (1.0,),
-    *,
-    reference_qubits: tuple[int, ...] | None = None,
 ) -> AnsatzSpec:
-    reference = (
-        None
-        if reference_qubits is None
-        else AnsatzReferenceSpec(macro="X", qubits=reference_qubits)
-    )
     return AnsatzSpec(
         num_qubits=1,
         parameters=("theta",),
-        reference=reference,
-        layers=(
-            LayerSpec(
-                operations=tuple(
-                    OperationSpec(
-                        macro="PauliRotation",
-                        qubits=(0,),
-                        parameters={
-                            "angle": ParameterExpression.parameter(
-                                "theta", coefficient
-                            )
-                        },
-                        options={"pauli": "X"},
+        operations=tuple(
+            OperationSpec(
+                macro="PauliRotation",
+                qubits=(0,),
+                parameters={
+                    "angle": ParameterExpression.parameter(
+                        "theta", coefficient
                     )
-                    for coefficient in coefficients
-                )
-            ),
+                },
+                options={"pauli": "X"},
+            )
+            for coefficient in coefficients
         ),
     )
 
@@ -76,7 +62,7 @@ def public_problem(*, occupation: tuple[int, ...] | None = None) -> PublicProble
         pauli_terms=(PauliTerm("Z", 1.0),),
         encoding=EncodingSpec(),
         sector=SectorSpec(),
-        reference=ReferenceSpec(
+        initial_state=InitialStateSpec(
             kind="computational_basis" if occupation is not None else "unspecified",
             occupation=occupation,
         ),
@@ -96,31 +82,29 @@ class TrustedEvaluatorHardeningTests(unittest.TestCase):
     def setUp(self) -> None:
         self.protocol = EvaluationProtocol(max_evals=4, restarts=1, seed=17)
 
-    def test_public_evaluator_rejects_candidate_introduced_reference(self) -> None:
+    def test_public_evaluator_rejects_candidate_authored_initialization(self) -> None:
+        forged = rotation_spec().to_dict()
+        forged["reference"] = {"macro": "X", "qubits": [0]}
         result = evaluate_public_problem(
             public_problem(),
-            rotation_spec(reference_qubits=(0,)),
+            forged,
             protocol=self.protocol,
         )
 
-        self.assertFalse(result.receipt.valid)
-        self.assertIn("cannot introduce a reference", result.receipt.violations[0])
+        self.assertFalse(result.result.valid)
+        self.assertIn("unsupported fields", result.result.violations[0])
 
-    def test_public_evaluator_requires_the_declared_reference(self) -> None:
-        missing = evaluate_public_problem(
+    def test_public_evaluator_prepends_declared_initial_state(self) -> None:
+        empty = AnsatzSpec(num_qubits=1)
+        prepared = evaluate_public_problem(
             public_problem(occupation=(1,)),
-            rotation_spec(),
-            protocol=self.protocol,
-        )
-        exact = evaluate_public_problem(
-            public_problem(occupation=(1,)),
-            rotation_spec(reference_qubits=(0,)),
+            empty,
             protocol=self.protocol,
         )
 
-        self.assertFalse(missing.receipt.valid)
-        self.assertIn("must exactly match", missing.receipt.violations[0])
-        self.assertTrue(exact.receipt.valid, exact.receipt.violations)
+        self.assertTrue(prepared.result.valid, prepared.result.violations)
+        self.assertAlmostEqual(prepared.result.best_energy, -1.0)
+        self.assertEqual(prepared.result.optimized_parameter_binding, {})
 
     def test_low_level_evaluator_rejects_non_hermitian_hamiltonian(self) -> None:
         result = evaluate_ansatz(
@@ -129,8 +113,8 @@ class TrustedEvaluatorHardeningTests(unittest.TestCase):
             protocol=self.protocol,
         )
 
-        self.assertFalse(result.receipt.valid)
-        self.assertIn("Hermitian", result.receipt.violations[0])
+        self.assertFalse(result.result.valid)
+        self.assertIn("Hermitian", result.result.violations[0])
 
     def test_low_level_evaluator_rejects_non_finite_hamiltonian(self) -> None:
         result = evaluate_ansatz(
@@ -139,8 +123,8 @@ class TrustedEvaluatorHardeningTests(unittest.TestCase):
             protocol=self.protocol,
         )
 
-        self.assertFalse(result.receipt.valid)
-        self.assertIn("finite", result.receipt.violations[0])
+        self.assertFalse(result.result.valid)
+        self.assertIn("finite", result.result.violations[0])
 
     def test_rotation_split_and_cancellation_share_semantic_identity(self) -> None:
         unsplit = rotation_spec((1.0,))
@@ -169,7 +153,6 @@ class TrustedEvaluatorHardeningTests(unittest.TestCase):
                     "hypothesis_id": "structure",
                     "spec": rotation_spec((1.0,)).to_dict(),
                     "metadata": {
-                        "enforcement": "unconstrained",
                         "falsifier": "the trusted evaluation shows no improvement",
                     },
                 }
@@ -183,7 +166,6 @@ class TrustedEvaluatorHardeningTests(unittest.TestCase):
                         "hypothesis_id": "structure",
                         "spec": rotation_spec((0.5, 0.5)).to_dict(),
                         "metadata": {
-                            "enforcement": "unconstrained",
                             "falsifier": "the trusted evaluation shows no improvement",
                         },
                     }
@@ -191,6 +173,23 @@ class TrustedEvaluatorHardeningTests(unittest.TestCase):
 
 
 class ProbeHardeningTests(unittest.TestCase):
+    def test_16_qubit_global_symmetry_probe_has_productive_cost(self) -> None:
+        hamiltonian = SparsePauliOp.from_list(
+            [
+                (pauli_label(index + 1, 16), 1.0)
+                for index in range(1_245)
+            ]
+        )
+        request = {
+            "type": "normalized_commutator",
+            "generator": {
+                "type": "global_pauli_sum",
+                "pauli": "Z",
+            },
+        }
+
+        self.assertEqual(algebraic_probe_cost_units(hamiltonian, request), 1.25)
+
     def test_probe_rejects_non_hermitian_hamiltonian(self) -> None:
         request = {
             "type": "normalized_commutator",
@@ -223,14 +222,14 @@ class ProbeHardeningTests(unittest.TestCase):
     def test_probe_cost_scales_with_validated_sparse_work(self) -> None:
         hamiltonian = SparsePauliOp.from_list([("Z" + "I" * 7, 1.0)])
         small = {
-            "type": "reference_moments",
+            "type": "initial_state_moments",
             "generator": {
                 "type": "pauli_sum",
                 "terms": [{"pauli": "X" + "I" * 7, "coeff": 1.0}],
             },
         }
         large = {
-            "type": "reference_moments",
+            "type": "initial_state_moments",
             "generator": {
                 "type": "pauli_sum",
                 "terms": [
@@ -255,7 +254,7 @@ class ProbeHardeningTests(unittest.TestCase):
             pauli_terms=tuple(PauliTerm(label, 1.0) for label in labels),
             encoding=EncodingSpec(),
             sector=SectorSpec(),
-            reference=ReferenceSpec(),
+            initial_state=InitialStateSpec(),
             backend=BackendSpec(),
         )
         generator = {
@@ -277,20 +276,15 @@ class ProbeHardeningTests(unittest.TestCase):
                     },
                 }
             )
-            receipt = controller.dispatch_external(
+            step = controller.dispatch_external(
                 {
                     "type": "request_probe",
                     "hypothesis_id": "large_h",
-                    "probe_id": "large_h_commutator",
-                    "probe": {
-                        "type": "normalized_commutator",
-                        "generator": generator,
-                    },
                 }
             )
 
-        self.assertEqual(receipt.result["cost_units"], 0.2)
-        self.assertAlmostEqual(receipt.state["spent_budget"], 0.3)
+        self.assertEqual(step.result["cost_units"], 0.25)
+        self.assertAlmostEqual(step.state_summary["budget"]["spent"], 0.35)
 
 
 if __name__ == "__main__":

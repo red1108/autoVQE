@@ -6,6 +6,14 @@ user directs.
 
 - Treat `user_problem/hamiltonian.json` as immutable input. Do not add a
   reference energy or state, and do not rename it to match an example.
+- During an ansatz-discovery run, do not modify AutoVQE source, tests, or
+  documentation. Manually write only action JSON under
+  `.autovqe-runtime/actions/`; the CLI alone owns run files and history.
+  Report a harness defect instead of patching around it.
+- Route every probe, energy, optimization, and resource measurement through
+  `uv run autovqe research ...`. Do not import the evaluator directly, run a
+  separate eigensolver/optimizer, or edit controller-owned evidence to bypass
+  the closed research loop and its budget.
 - Read the README research workflow, evaluator-owned evidence rules, action
   protocol, and ansatz playbook before choosing a strategy.
 - Express every proposed variational circuit as a typed `AnsatzSpec`. Do not
@@ -13,12 +21,17 @@ user directs.
   counts, depth, custom operations, or hidden numeric answers.
 - Treat hypotheses as falsifiable branches. Use the available physical probes
   and the fixed audit, smoke, and promotion stages. Preserve failed and retired
-  branches so later decisions retain their evidence.
-- Use symmetry-preserving gates only after the relevant conserved quantity is
-  established and the candidate passes operation-level preservation checks.
+  branches so later decisions retain their evidence. Bring a candidate from a
+  different primary hypothesis through smoke before requesting promotion.
+- Cite supported symmetry probe IDs separately from the candidate's primary
+  structural hypothesis. Use symmetry-preserving gates only after a relevant,
+  non-spectator conserved quantity is established and the candidate passes
+  operation-level preservation checks for every cited charge.
 - Stop only after the controller accepts `positive_commit` or a grounded
-  `negative_close`. A positive decision proves only the recorded local
-  promotion rule, not exact ground-state accuracy or generalization.
+  `negative_close`. Negative closure must satisfy the controller's
+  objective-activity breadth-or-depth rule; flat phase-only failures do not
+  count. A positive decision proves only the recorded local promotion rule,
+  not exact ground-state accuracy or generalization.
 - Report the optimized parameter binding only from `research result`. If no
   independent reference score was provided, state that limitation explicitly.
 - Before reporting implementation changes, run the relevant unit tests and

@@ -2,6 +2,7 @@
 
 __all__ = [
     "ansatz_ir",
+    "backend",
     "compiler",
     "contracts",
     "controller",
@@ -10,7 +11,7 @@ __all__ = [
     "history",
     "macros",
     "observations",
-    "prepare",
+    "problem",
     "probes",
     "research",
     "research_cli",

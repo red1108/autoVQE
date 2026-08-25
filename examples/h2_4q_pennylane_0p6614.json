@@ -17,8 +17,7 @@
     { "pauli": "YXXY", "coeff": 0.044750084063019925 },
     { "pauli": "XYYX", "coeff": 0.044750084063019925 }
   ],
-  "reference_energy": -1.1361891625218792,
-  "reference_note": "PennyLane qchem.molecular_hamiltonian H2 STO-3G coordinates [0,0,-0.6614,0,0,0.6614]. Pauli labels converted to Qiskit big-endian convention.",
+  "source_note": "PennyLane qchem.molecular_hamiltonian H2 STO-3G coordinates [0,0,-0.6614,0,0,0.6614]. Pauli labels converted to Qiskit big-endian convention.",
   "basis_gates": [
     "rx",
     "ry",

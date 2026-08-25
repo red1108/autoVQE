@@ -7,7 +7,6 @@ from qiskit.quantum_info import Operator, SparsePauliOp
 
 from autovqe.ansatz_ir import (
     AnsatzSpec,
-    LayerSpec,
     OperationSpec,
     ParameterExpression,
 )
@@ -25,7 +24,7 @@ def _compiled_unitary(operation: OperationSpec, angle: float) -> np.ndarray:
         AnsatzSpec(
             num_qubits=2,
             parameters=("theta",),
-            layers=(LayerSpec(operations=(operation,)),),
+            operations=(operation,),
         )
     )
     bound = compiled.circuit.assign_parameters(

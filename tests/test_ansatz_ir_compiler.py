@@ -10,11 +10,9 @@ from qiskit.quantum_info import Operator, SparsePauliOp
 from autovqe.ansatz_ir import (
     AnsatzIRValidationError,
     AnsatzSpec,
-    LayerSpec,
     OperationSpec,
     ParameterExpression,
     ParameterRef,
-    ReferenceSpec,
 )
 from autovqe.compiler import (
     AnsatzAudit,
@@ -37,35 +35,24 @@ def example_spec() -> AnsatzSpec:
         name="typed_example",
         num_qubits=3,
         parameters=(theta, phi),
-        reference=ReferenceSpec(macro="X", qubits=(0,)),
-        layers=(
-            LayerSpec(
-                name="hopping",
-                operations=(
-                    OperationSpec(
-                        macro="PauliRotation",
-                        qubits=(0, 1),
-                        parameters={
-                            "angle": ParameterExpression.parameter(theta, 0.5)
-                        },
-                        options={"pauli": "XZ"},
-                    ),
-                    OperationSpec(
-                        macro="XYExchange",
-                        qubits=(1, 2),
-                        parameters={"angle": ParameterExpression.parameter(phi)},
-                    ),
-                ),
+        operations=(
+            OperationSpec(
+                macro="PauliRotation",
+                qubits=(0, 1),
+                parameters={
+                    "angle": ParameterExpression.parameter(theta, 0.5)
+                },
+                options={"pauli": "XZ"},
             ),
-            LayerSpec(
-                name="spin",
-                operations=(
-                    OperationSpec(
-                        macro="IsotropicExchange",
-                        qubits=(0, 2),
-                        parameters={"angle": ParameterExpression.parameter(theta)},
-                    ),
-                ),
+            OperationSpec(
+                macro="XYExchange",
+                qubits=(1, 2),
+                parameters={"angle": ParameterExpression.parameter(phi)},
+            ),
+            OperationSpec(
+                macro="IsotropicExchange",
+                qubits=(0, 2),
+                parameters={"angle": ParameterExpression.parameter(theta)},
             ),
         ),
     )
@@ -80,13 +67,12 @@ class AnsatzIRTests(unittest.TestCase):
         self.assertEqual(restored, spec)
         self.assertEqual(len(restored.operations), 3)
 
-    def test_top_level_operations_shorthand(self) -> None:
+    def test_ordered_operations_are_the_only_circuit_body(self) -> None:
         payload = {
             "version": 1,
             "name": "short",
             "num_qubits": 2,
             "parameters": ["theta"],
-            "reference": {"macro": "X", "qubits": [0]},
             "operations": [
                 {
                     "macro": "XYExchange",
@@ -97,9 +83,16 @@ class AnsatzIRTests(unittest.TestCase):
             ],
         }
         spec = AnsatzSpec.from_dict(payload)
-        self.assertEqual(len(spec.layers), 1)
         self.assertEqual(spec.operations[0].macro, "XYExchange")
         self.assertEqual(compile_ansatz(payload).audit.unique_trainable_params, 1)
+
+        for obsolete in (
+            {**payload, "reference": {"macro": "X", "qubits": [0]}},
+            {**payload, "layers": []},
+        ):
+            with self.subTest(obsolete=set(obsolete) - set(payload)):
+                with self.assertRaises(AnsatzIRValidationError):
+                    AnsatzSpec.from_dict(obsolete)
 
     def test_unknown_serialized_fields_are_rejected(self) -> None:
         payload = example_spec().to_dict()
@@ -120,10 +113,10 @@ class TrustedMacroTests(unittest.TestCase):
     def test_registry_is_exact_and_read_only(self) -> None:
         self.assertEqual(
             set(trusted_macro_names()),
-            {"PauliRotation", "XYExchange", "IsotropicExchange", "X"},
+            {"PauliRotation", "XYExchange", "IsotropicExchange"},
         )
         with self.assertRaises(TypeError):
-            TRUSTED_MACROS["custom"] = TRUSTED_MACROS["X"]  # type: ignore[index]
+            TRUSTED_MACROS["custom"] = TRUSTED_MACROS["XYExchange"]  # type: ignore[index]
 
     def test_all_variational_macros_are_identity_at_zero(self) -> None:
         validate_trusted_registry()
@@ -139,13 +132,11 @@ class CompilerAuditTests(unittest.TestCase):
         self.assertEqual(audit.trainable_parameter_names, ("theta", "phi"))
         self.assertEqual(dict(audit.parameter_occurrences), {"theta": 2, "phi": 1})
         self.assertEqual(audit.unused_parameters, ())
-        self.assertEqual(audit.layers, 2)
         self.assertEqual(audit.operations, 3)
-        self.assertEqual(audit.spec_nodes, 15)
+        self.assertEqual(audit.spec_nodes, 12)
         self.assertEqual(
             dict(audit.logical_macros),
             {
-                "X": 1,
                 "PauliRotation": 1,
                 "XYExchange": 1,
                 "IsotropicExchange": 1,
@@ -161,32 +152,27 @@ class CompilerAuditTests(unittest.TestCase):
         audit = validate_ansatz(example_spec())
         self.assertEqual(AnsatzAudit.from_dict(audit.to_dict()), audit)
 
-    def test_zero_parameters_leave_only_reference_preparation(self) -> None:
+    def test_zero_parameters_leave_the_identity(self) -> None:
         compiled = compile_ansatz(example_spec())
         bound = compiled.circuit.assign_parameters(
             {parameter: 0.0 for parameter in compiled.parameters.values()},
             inplace=False,
         )
         expected = QuantumCircuit(3)
-        expected.x(0)
         self.assertTrue(Operator(bound).equiv(Operator(expected)))
 
     def test_pauli_rotation_matches_exp_minus_i_angle_p(self) -> None:
         spec = AnsatzSpec(
             num_qubits=2,
             parameters=("theta",),
-            layers=(
-                LayerSpec(
-                    operations=(
-                        OperationSpec(
-                            macro="PauliRotation",
-                            qubits=(0, 1),
-                            parameters={
-                                "angle": ParameterExpression.parameter("theta")
-                            },
-                            options={"pauli": "XY"},
-                        ),
-                    )
+            operations=(
+                OperationSpec(
+                    macro="PauliRotation",
+                    qubits=(0, 1),
+                    parameters={
+                        "angle": ParameterExpression.parameter("theta")
+                    },
+                    options={"pauli": "XY"},
                 ),
             ),
         )
@@ -215,14 +201,14 @@ class CompilerSafetyTests(unittest.TestCase):
         return AnsatzSpec(
             num_qubits=num_qubits,
             parameters=parameters,
-            layers=(LayerSpec(operations=(operation,)),),
+            operations=(operation,),
         )
 
     def test_opaque_circuit_input_is_rejected(self) -> None:
         with self.assertRaises(AnsatzCompilerError):
             compile_ansatz(QuantumCircuit(2))  # type: ignore[arg-type]
 
-    def test_unknown_and_reference_only_operation_macros_are_rejected(self) -> None:
+    def test_unknown_and_nonvariational_operation_macros_are_rejected(self) -> None:
         for macro in ("UnitaryGate", "DenseMatrix", "custom", "X"):
             operation = OperationSpec(
                 macro=macro,
@@ -253,13 +239,6 @@ class CompilerSafetyTests(unittest.TestCase):
         )
         with self.assertRaises(AnsatzCompilerError):
             compile_ansatz(self.one_operation_spec(operation, num_qubits=2))
-
-        reference_only = AnsatzSpec(
-            num_qubits=2,
-            reference=ReferenceSpec(qubits=(2,)),
-        )
-        with self.assertRaises(AnsatzCompilerError):
-            compile_ansatz(reference_only)
 
     def test_pauli_support_must_be_active_and_match_length(self) -> None:
         for pauli in ("X", "XI", "XA"):
@@ -313,22 +292,30 @@ class CompilerSafetyTests(unittest.TestCase):
                 )
             )
 
-    def test_empty_layers_and_unknown_references_are_rejected(self) -> None:
-        with self.assertRaisesRegex(AnsatzCompilerError, "cannot be empty"):
+        dependent_operation = OperationSpec(
+            macro="XYExchange",
+            qubits=(0, 1),
+            parameters={
+                "angle": (
+                    ParameterExpression.parameter("theta")
+                    + ParameterExpression.parameter("redundant")
+                )
+            },
+        )
+        with self.assertRaisesRegex(AnsatzCompilerError, "linearly independent"):
             compile_ansatz(
-                AnsatzSpec(num_qubits=2, layers=(LayerSpec(operations=()),))
-            )
-        with self.assertRaisesRegex(AnsatzCompilerError, "at least one X target"):
-            compile_ansatz(
-                AnsatzSpec(num_qubits=2, reference=ReferenceSpec(macro="X", qubits=()))
-            )
-        with self.assertRaises(AnsatzCompilerError):
-            compile_ansatz(
-                AnsatzSpec(
-                    num_qubits=2,
-                    reference=ReferenceSpec(macro="Initialize", qubits=(0,)),
+                self.one_operation_spec(
+                    dependent_operation,
+                    parameters=("theta", "redundant"),
                 )
             )
+
+    def test_removed_reference_and_layer_fields_are_rejected(self) -> None:
+        base = AnsatzSpec(num_qubits=2).to_dict()
+        with self.assertRaises(AnsatzIRValidationError):
+            AnsatzSpec.from_dict({**base, "reference": None})
+        with self.assertRaises(AnsatzIRValidationError):
+            AnsatzSpec.from_dict({**base, "layers": []})
 
 
 if __name__ == "__main__":

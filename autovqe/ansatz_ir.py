@@ -12,7 +12,7 @@ import math
 import re
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 
 _PARAMETER_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,127}$")
@@ -263,37 +263,6 @@ AngleExpression = ParameterExpression
 
 
 @dataclass(frozen=True)
-class ReferenceSpec:
-    """Trusted reference preparation applied before all variational layers.
-
-    Entries in ``qubits`` are Qiskit qubit indices, not Pauli-label positions.
-    """
-
-    macro: str = "X"
-    qubits: tuple[int, ...] = ()
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.macro, str) or not self.macro:
-            raise AnsatzIRValidationError("reference.macro must be a non-empty string")
-        qubits = tuple(self.qubits)
-        for index, qubit in enumerate(qubits):
-            _integer(qubit, f"reference.qubits[{index}]")
-        if len(qubits) != len(set(qubits)):
-            raise AnsatzIRValidationError("reference qubits must be unique")
-        object.__setattr__(self, "qubits", qubits)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"macro": self.macro, "qubits": list(self.qubits)}
-
-    @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> "ReferenceSpec":
-        payload = _mapping(payload, "reference")
-        _strict_keys(payload, {"macro", "qubits"}, "reference")
-        qubits = _sequence(payload.get("qubits", ()), "reference.qubits")
-        return cls(macro=payload.get("macro", "X"), qubits=tuple(qubits))
-
-
-@dataclass(frozen=True)
 class OperationSpec:
     """One invocation of a trusted logical macro.
 
@@ -373,47 +342,12 @@ class OperationSpec:
 
 
 @dataclass(frozen=True)
-class LayerSpec:
-    """An ordered group of logical operations."""
-
-    operations: tuple[OperationSpec, ...]
-    name: str | None = None
-
-    def __post_init__(self) -> None:
-        operations = tuple(self.operations)
-        if not all(isinstance(operation, OperationSpec) for operation in operations):
-            raise AnsatzIRValidationError("layer.operations must contain OperationSpec objects")
-        if self.name is not None and (not isinstance(self.name, str) or not self.name):
-            raise AnsatzIRValidationError("layer.name must be a non-empty string when provided")
-        object.__setattr__(self, "operations", operations)
-
-    def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "operations": [operation.to_dict() for operation in self.operations]
-        }
-        if self.name is not None:
-            payload["name"] = self.name
-        return payload
-
-    @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> "LayerSpec":
-        payload = _mapping(payload, "layer")
-        _strict_keys(payload, {"name", "operations"}, "layer")
-        operations = _sequence(payload.get("operations", ()), "layer.operations")
-        return cls(
-            operations=tuple(OperationSpec.from_dict(item) for item in operations),
-            name=payload.get("name"),
-        )
-
-
-@dataclass(frozen=True)
 class AnsatzSpec:
     """Complete, serializable logical ansatz specification."""
 
     num_qubits: int
     parameters: tuple[ParameterRef, ...] = ()
-    reference: ReferenceSpec | None = None
-    layers: tuple[LayerSpec, ...] = ()
+    operations: tuple[OperationSpec, ...] = ()
     name: str = "ansatz"
     version: int = 1
 
@@ -437,24 +371,19 @@ class AnsatzSpec:
         if len(names) != len(set(names)):
             raise AnsatzIRValidationError("declared parameter names must be unique")
 
-        if self.reference is not None and not isinstance(self.reference, ReferenceSpec):
-            raise AnsatzIRValidationError("ansatz.reference must be a ReferenceSpec or None")
-        layers = tuple(self.layers)
-        if not all(isinstance(layer, LayerSpec) for layer in layers):
-            raise AnsatzIRValidationError("ansatz.layers must contain LayerSpec objects")
+        operations = tuple(self.operations)
+        if not all(isinstance(operation, OperationSpec) for operation in operations):
+            raise AnsatzIRValidationError(
+                "ansatz.operations must contain OperationSpec objects"
+            )
 
         object.__setattr__(self, "num_qubits", num_qubits)
         object.__setattr__(self, "parameters", parameters)
-        object.__setattr__(self, "layers", layers)
+        object.__setattr__(self, "operations", operations)
         object.__setattr__(self, "version", version)
 
-    @property
-    def operations(self) -> tuple[OperationSpec, ...]:
-        return tuple(self.iter_operations())
-
     def iter_operations(self) -> Iterator[OperationSpec]:
-        for layer in self.layers:
-            yield from layer.operations
+        yield from self.operations
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -462,8 +391,7 @@ class AnsatzSpec:
             "name": self.name,
             "num_qubits": self.num_qubits,
             "parameters": [parameter.to_dict() for parameter in self.parameters],
-            "reference": None if self.reference is None else self.reference.to_dict(),
-            "layers": [layer.to_dict() for layer in self.layers],
+            "operations": [operation.to_dict() for operation in self.operations],
         }
 
     @classmethod
@@ -471,13 +399,11 @@ class AnsatzSpec:
         payload = _mapping(payload, "ansatz")
         _strict_keys(
             payload,
-            {"version", "name", "num_qubits", "parameters", "reference", "layers", "operations"},
+            {"version", "name", "num_qubits", "parameters", "operations"},
             "ansatz",
         )
         if "num_qubits" not in payload:
             raise AnsatzIRValidationError("ansatz.num_qubits is required")
-        if "layers" in payload and "operations" in payload:
-            raise AnsatzIRValidationError("ansatz must use either layers or operations, not both")
 
         parameters_payload = _sequence(payload.get("parameters", ()), "ansatz.parameters")
         parameters: list[ParameterRef] = []
@@ -487,23 +413,15 @@ class AnsatzSpec:
             else:
                 parameters.append(ParameterRef.from_dict(item))
 
-        if "operations" in payload:
-            operations_payload = _sequence(payload["operations"], "ansatz.operations")
-            operations = tuple(OperationSpec.from_dict(item) for item in operations_payload)
-            layers = (LayerSpec(operations=operations),) if operations else ()
-        else:
-            layers_payload = _sequence(payload.get("layers", ()), "ansatz.layers")
-            layers = tuple(LayerSpec.from_dict(item) for item in layers_payload)
-
-        reference_payload = payload.get("reference")
-        reference = (
-            None if reference_payload is None else ReferenceSpec.from_dict(reference_payload)
+        operations_payload = _sequence(
+            payload.get("operations", ()), "ansatz.operations"
         )
         return cls(
             num_qubits=payload["num_qubits"],
             parameters=tuple(parameters),
-            reference=reference,
-            layers=layers,
+            operations=tuple(
+                OperationSpec.from_dict(item) for item in operations_payload
+            ),
             name=payload.get("name", "ansatz"),
             version=payload.get("version", 1),
         )
@@ -516,9 +434,3 @@ def parameter_expression(
     """Convenience constructor for a one-parameter affine expression."""
 
     return ParameterExpression.parameter(parameter, coefficient)
-
-
-def layer(operations: Iterable[OperationSpec], name: str | None = None) -> LayerSpec:
-    """Convenience constructor that freezes an operation iterable."""
-
-    return LayerSpec(tuple(operations), name=name)

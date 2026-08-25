@@ -6,7 +6,6 @@ Use this checklist before tagging or publishing AutoVQE.
 
 - `git status --short` contains only intentional source, documentation, test,
   and calibration-input changes.
-- The release candidate is committed before evaluation begins.
 - Generated run directories, action scratch files, caches, environments, and
   local logs are not tracked.
 - `.autovqe-runtime/` remains ignored.
@@ -21,29 +20,35 @@ Use this checklist before tagging or publishing AutoVQE.
 ## Required checks
 
 ```bash
-uv sync
+uv sync --frozen
 uv run python -m compileall -q autovqe tests
 uv run python -m unittest discover -s tests -v
-uv run python -m autovqe.harness check
+uv run autovqe check
+uv build
 git diff --check
 ```
+
+Inspect the source distribution and confirm that `solve_runs/`,
+`user_problem/`, `.autovqe-runtime/`, environments, and personal Codex files
+are absent.
 
 Confirm that the documented command surface is available:
 
 ```bash
-uv run python -m autovqe.harness inspect --help
-uv run python -m autovqe.harness research init --help
-uv run python -m autovqe.harness research step --help
-uv run python -m autovqe.harness research status --help
-uv run python -m autovqe.harness research result --help
+uv run autovqe inspect --help
+uv run autovqe research init --help
+uv run autovqe research step --help
+uv run autovqe research status --help
+uv run autovqe research result --help
 ```
 
 ## Independent user test
 
 The release test should resemble a future user's first interaction.
 
-1. Commit the release candidate.
-2. Create a detached worktree at that exact revision in a separate directory.
+1. Create a clean worktree from the version under test in a separate directory.
+2. Leave development-only changes and prior run directories in the development
+   workspace.
 3. Open that directory in a new Codex session with no development conversation
    or previous AutoVQE run context.
 4. Place one unseen input at `user_problem/hamiltonian.json`. Do not place its
@@ -52,7 +57,7 @@ The release test should resemble a future user's first interaction.
    accepts a terminal decision.
 6. Do not provide hints about the expected symmetry, circuit family, gate
    sequence, or target energy during the run.
-7. Save the final `research result` output and the full branch history.
+7. Review the final `research result` and branch history.
 8. Only after the run ends, compare the returned circuit result with the
    reference answer in a separate evaluation step.
 
@@ -68,9 +73,17 @@ test.
 - Candidate metadata did not become authoritative energy, optimized angles, or
   resource counts.
 - Symmetry-oriented gates were admitted only after the relevant physical test.
+- The candidate contained only allowed variational operations; initial
+  preparation came from evaluator-owned problem input.
 - Audit, smoke, and promotion ran in order.
+- Resource audit completed before optimizer calls.
 - Failed and retired branches remain visible.
-- The terminal decision cites the evidence required by the controller.
+- A positive decision used a different-hypothesis competitor or control at the
+  same promotion fidelity.
+- The controller derived terminal evidence rather than accepting candidate
+  measurements or a written non-dominance claim.
+- Preterminal history contains no optimized parameter binding; `research
+  result` reproduces it from the fixed committed promotion protocol.
 - A positive decision is described as a local promotion, not as exact accuracy
   or performance on new problems.
 - Any reference comparison happened after the research run and is reported

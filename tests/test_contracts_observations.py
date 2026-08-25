@@ -1,50 +1,50 @@
 from __future__ import annotations
 
+import json
 import math
+import tempfile
 import unittest
-from dataclasses import replace
+from pathlib import Path
 
-from qiskit.quantum_info import SparsePauliOp
-
-from autovqe import prepare
 from autovqe.contracts import (
     BackendSpec,
     EncodingSpec,
-    FORBIDDEN_AGENT_KEYS,
+    InitialStateSpec,
     PauliTerm,
     PublicProblem,
-    ReferenceSpec,
     SectorSpec,
-    assert_agent_safe,
+    canonical_data,
     canonical_json,
 )
-from autovqe.observations import adapt_prepare_problem, public_problem_from_prepare
+from autovqe.observations import observe_problem
+from autovqe.problem import (
+    hamiltonian_from_problem,
+    load_problem,
+    load_problem_document,
+)
 
 
-def _small_problem() -> prepare.Problem:
-    pauli_terms = [
-        {"pauli": "II", "coeff": -1.052373245772859},
-        {"pauli": "IZ", "coeff": 0.39793742484318045},
-        {"pauli": "ZI", "coeff": -0.39793742484318045},
-        {"pauli": "ZZ", "coeff": -0.01128010425623538},
-        {"pauli": "XX", "coeff": 0.18093119978423156},
-    ]
-    hamiltonian = SparsePauliOp.from_list(
-        [(term["pauli"], term["coeff"]) for term in pauli_terms]
-    ).simplify()
-    reference_energy, reference_state = prepare.exact_reference(hamiltonian, 2)
-    return prepare.Problem(
-        name="small_test_problem",
-        num_qubits=2,
-        pauli_terms=pauli_terms,
-        hamiltonian=hamiltonian,
-        reference_energy=reference_energy,
-        reference_state=reference_state,
-        symmetry=None,
-        basis_gates=["rx", "ry", "rz", "cx"],
-        coupling_map=[[0, 1], [1, 0]],
-        initial_state_hint=[1, 0],
-    )
+def _payload() -> dict:
+    return {
+        "name": "small_test_problem",
+        "pauli_terms": [
+            {"pauli": "II", "coeff": -1.052373245772859},
+            {"pauli": "IZ", "coeff": 0.39793742484318045},
+            {"pauli": "ZI", "coeff": -0.39793742484318045},
+            {"pauli": "ZZ", "coeff": -0.01128010425623538},
+            {"pauli": "XX", "coeff": 0.18093119978423156},
+        ],
+        "basis_gates": ["rx", "ry", "rz", "cx"],
+        "coupling_map": [[0, 1], [1, 0]],
+        "initial_state_hint": [1, 0],
+    }
+
+
+def _load(payload: dict | None = None) -> PublicProblem:
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "problem.json"
+        path.write_text(json.dumps(payload or _payload()), encoding="utf-8")
+        return load_problem(path)
 
 
 class CanonicalSerializationTests(unittest.TestCase):
@@ -61,96 +61,177 @@ class CanonicalSerializationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     canonical_json({"value": value})
 
-    def test_agent_safety_walks_nested_mappings(self) -> None:
-        with self.assertRaisesRegex(ValueError, "reference_energy"):
-            assert_agent_safe({"nested": [{"reference_energy": -1.0}]})
-        with self.assertRaisesRegex(ValueError, "model_class"):
-            assert_agent_safe({"model_class": "memorized"})
-
 
 class ProblemContractTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.problem = _small_problem()
+        self.problem = _load()
 
-    def test_adapter_splits_public_private_and_agent_safe_views(self) -> None:
-        views = adapt_prepare_problem(self.problem)
-
-        self.assertEqual(views.public, views.public_problem)
-        self.assertEqual(views.private, views.private_context)
-        self.assertEqual(views.safe, views.observation_bundle)
-        self.assertEqual(views.public_problem.problem_id, self.problem.name)
-        self.assertEqual(views.public_problem.num_qubits, 2)
-        self.assertEqual(views.public_problem.reference.occupation, (1, 0))
-        self.assertEqual(views.public_problem.backend.basis_gates, ("rx", "ry", "rz", "cx"))
-        self.assertEqual(views.public_problem.backend.coupling_map, ((0, 1), (1, 0)))
-
-        self.assertEqual(views.private_context.source_name, self.problem.name)
-        self.assertEqual(views.private_context.reference_energy, self.problem.reference_energy)
+    def test_loader_returns_the_single_validated_problem_model(self) -> None:
+        self.assertIsInstance(self.problem, PublicProblem)
+        self.assertEqual(self.problem.problem_id, "small_test_problem")
+        self.assertEqual(self.problem.num_qubits, 2)
+        self.assertEqual(self.problem.initial_state.occupation, (1, 0))
         self.assertEqual(
-            views.private_context.reference_state,
-            tuple(complex(value) for value in self.problem.reference_state),
+            self.problem.backend.basis_gates,
+            ("rx", "ry", "rz", "cx"),
         )
+        self.assertEqual(self.problem.backend.coupling_map, ((0, 1), (1, 0)))
+        self.assertFalse(hasattr(self.problem, "reference_energy"))
+        self.assertFalse(hasattr(self.problem, "reference_state"))
 
-        payload = views.observation_bundle.to_canonical_json()
-        lowered = payload.lower()
-        for forbidden in FORBIDDEN_AGENT_KEYS:
-            self.assertNotIn(f'"{forbidden}"', lowered)
-        self.assertIn(self.problem.name, payload)
-        self.assertFalse(hasattr(views.observation_bundle, "model_class"))
-        self.assertFalse(hasattr(views.observation_bundle, "recommendation"))
+    def test_problem_loader_accepts_a_utf8_bom(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "problem.json"
+            path.write_text(json.dumps(_payload()), encoding="utf-8-sig")
+            loaded = load_problem(path)
+        self.assertEqual(loaded.problem_id, "small_test_problem")
+        self.assertEqual(hamiltonian_from_problem(self.problem).num_qubits, 2)
 
-    def test_public_problem_name_and_observation_json_are_stable(self) -> None:
-        first = adapt_prepare_problem(self.problem)
-        second_problem = _small_problem()
-        second = adapt_prepare_problem(second_problem)
+    def test_observation_is_compact_and_does_not_embed_pauli_terms(self) -> None:
+        observation = observe_problem(self.problem)
+        payload = canonical_data(observation)
 
-        self.assertEqual(first.public_problem.problem_id, second.public_problem.problem_id)
-        self.assertEqual(
-            first.observation_bundle.to_canonical_json(),
-            second.observation_bundle.to_canonical_json(),
-        )
+        self.assertNotIn("pauli_terms", payload)
+        self.assertEqual(payload["problem_id"], self.problem.problem_id)
+        self.assertEqual(payload["structure"]["term_count"], 5)
 
-    def test_structural_observation_is_mechanical_not_recommendational(self) -> None:
-        structure = adapt_prepare_problem(self.problem).observation_bundle.structure
-        self.assertEqual(structure.term_count, len(self.problem.hamiltonian.paulis))
+    def test_structural_observation_is_mechanical(self) -> None:
+        structure = observe_problem(self.problem).structure
+        self.assertEqual(structure.term_count, 5)
         self.assertEqual(structure.identity_term_count, 1)
         self.assertEqual(structure.max_locality, 2)
         self.assertIn((2, 2), structure.locality_counts)
+        self.assertEqual(structure.support_graph_edge_count, 1)
+        self.assertEqual(structure.support_graph_degrees, ((0, 1), (1, 1)))
+        self.assertEqual(structure.support_graph_components, ((0, 1),))
+        self.assertTrue(structure.support_graph_edges_complete)
         self.assertEqual(structure.support_graph_edges, ((0, 1),))
-        self.assertFalse(structure.has_complex_coefficients)
 
-    def test_only_allowlisted_symmetry_metadata_crosses_public_boundary(self) -> None:
-        poisoned = replace(
-            self.problem,
-            symmetry={
-                "active_electrons": 1,
-                "active_orbitals": 1,
-                "spin_orbitals": 2,
-                "mapping": "jordan_wigner",
-                "model_class": "fixture_special_case",
-                "recommendation": "initialize_exact_state",
-                "reference_energy": -999.0,
-                "reference_state": [1.0, 0.0, 0.0, 0.0],
-            },
+    def test_large_support_graph_is_summarized_without_partial_edges(self) -> None:
+        num_qubits = 12
+        terms = []
+        for left in range(num_qubits):
+            for right in range(left + 1, num_qubits):
+                label = ["I"] * num_qubits
+                label[num_qubits - left - 1] = "Z"
+                label[num_qubits - right - 1] = "Z"
+                terms.append(PauliTerm("".join(label), 1.0))
+        problem = PublicProblem.create(
+            problem_id="dense_support",
+            num_qubits=num_qubits,
+            pauli_terms=terms,
         )
-        public = public_problem_from_prepare(poisoned)
-        payload = canonical_json(public)
 
-        self.assertEqual(public.encoding.mapping, "jordan_wigner")
-        self.assertEqual(public.encoding.active_orbitals, 1)
-        self.assertEqual(public.encoding.spin_orbitals, 2)
-        self.assertEqual(public.sector.values, (("particle_number", 1),))
-        for forbidden in FORBIDDEN_AGENT_KEYS:
-            self.assertNotIn(f'"{forbidden}"', payload.lower())
-        self.assertNotIn("fixture_special_case", payload)
-        self.assertNotIn("initialize_exact_state", payload)
+        structure = observe_problem(problem).structure
 
-    def test_private_context_is_rejected_by_agent_safety_guard(self) -> None:
-        private_context = adapt_prepare_problem(self.problem).private_context
-        with self.assertRaisesRegex(ValueError, "reference_energy"):
-            assert_agent_safe(private_context)
+        self.assertEqual(structure.support_graph_edge_count, 66)
+        self.assertEqual(
+            structure.support_graph_degrees,
+            tuple((qubit, 11) for qubit in range(num_qubits)),
+        )
+        self.assertEqual(
+            structure.support_graph_components,
+            (tuple(range(num_qubits)),),
+        )
+        self.assertFalse(structure.support_graph_edges_complete)
+        self.assertEqual(structure.support_graph_edges, ())
 
-    def test_public_problem_validates_reference_and_backend_bounds(self) -> None:
+    def test_loader_accepts_only_typed_v1_symmetry_metadata(self) -> None:
+        payload = _payload()
+        payload["symmetry"] = {
+            "active_electrons": 1,
+            "active_orbitals": 1,
+            "spin_orbitals": 2,
+            "mapping": "jordan_wigner",
+        }
+        problem = _load(payload)
+
+        self.assertEqual(problem.encoding.mapping, "jordan_wigner")
+        self.assertEqual(problem.encoding.active_orbitals, 1)
+        self.assertEqual(problem.encoding.spin_orbitals, 2)
+        self.assertEqual(problem.sector.values, (("particle_number", 1),))
+
+    def test_unknown_answer_and_dominant_occupation_fields_are_rejected(self) -> None:
+        cases = [
+            ("reference_energy", -999.0),
+            ("reference_state", [1.0, 0.0]),
+            ("expected_ansatz", {"name": "answer"}),
+        ]
+        for field, value in cases:
+            with self.subTest(field=field):
+                payload = _payload()
+                payload[field] = value
+                with self.assertRaisesRegex(ValueError, "invalid problem document"):
+                    _load(payload)
+
+        payload = _payload()
+        payload["symmetry"] = {"dominant_occupation": "10"}
+        with self.assertRaisesRegex(ValueError, "invalid symmetry fields"):
+            _load(payload)
+
+    def test_invalid_top_level_and_symmetry_field_types_are_rejected(self) -> None:
+        top_level_cases = {
+            "name": 7,
+            "source_note": False,
+            "basis_gates": "rx,ry",
+            "coupling_map": None,
+            "initial_state_hint": None,
+        }
+        for field, value in top_level_cases.items():
+            with self.subTest(field=field):
+                payload = _payload()
+                payload[field] = value
+                with self.assertRaises(ValueError):
+                    _load(payload)
+
+        symmetry_cases = {
+            "symmetry": [],
+            "mapping": 3,
+            "spin_orbitals": 2.0,
+            "active_electrons": True,
+            "spin_projection": "zero",
+            "parity": [],
+        }
+        for field, value in symmetry_cases.items():
+            with self.subTest(field=field):
+                payload = _payload()
+                if field == "symmetry":
+                    payload[field] = value
+                else:
+                    payload["symmetry"] = {field: value}
+                with self.assertRaises(ValueError):
+                    _load(payload)
+
+    def test_document_loader_returns_validated_canonical_raw_input(self) -> None:
+        payload = _payload()
+        payload["source_note"] = "public provenance only"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "problem.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            problem, document = load_problem_document(path)
+
+        self.assertIsInstance(problem, PublicProblem)
+        self.assertEqual(document, canonical_data(payload))
+        self.assertIn("coeff", document["pauli_terms"][0])
+        self.assertNotIn("real", document["pauli_terms"][0])
+
+    def test_duplicate_pauli_terms_are_combined(self) -> None:
+        payload = _payload()
+        payload["pauli_terms"] = [
+            {"pauli": "Z", "coeff": 1.0},
+            {"pauli": "Z", "coeff": 2.0},
+            {"pauli": "I", "coeff": -0.5},
+        ]
+        payload["initial_state_hint"] = [0]
+        payload["coupling_map"] = []
+        problem = _load(payload)
+
+        self.assertEqual(
+            problem.pauli_terms,
+            (PauliTerm("I", -0.5), PauliTerm("Z", 3.0)),
+        )
+
+    def test_public_problem_validates_initial_state_and_backend_bounds(self) -> None:
         common = {
             "num_qubits": 2,
             "pauli_terms": (PauliTerm("ZI", 1.0),),
@@ -160,13 +241,16 @@ class ProblemContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "occupation"):
             PublicProblem.create(
                 **common,
-                reference=ReferenceSpec(kind="computational_basis", occupation=(1,)),
+                initial_state=InitialStateSpec(
+                    kind="computational_basis",
+                    occupation=(1,),
+                ),
                 backend=BackendSpec(),
             )
         with self.assertRaisesRegex(ValueError, "outside"):
             PublicProblem.create(
                 **common,
-                reference=ReferenceSpec(),
+                initial_state=InitialStateSpec(),
                 backend=BackendSpec(coupling_map=((0, 2),)),
             )
         with self.assertRaisesRegex(ValueError, "qiskit_little_endian"):

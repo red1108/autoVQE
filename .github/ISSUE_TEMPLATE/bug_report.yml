@@ -16,7 +16,7 @@ body:
       label: Reproduction
       description: Include the exact command and problem file.
       placeholder: |
-        uv run python -m autovqe.harness inspect --problem examples/h2_2q.json
+        uv run autovqe inspect --problem examples/h2_2q.json
     validations:
       required: true
   - type: textarea

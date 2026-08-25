@@ -4,23 +4,24 @@ import unittest
 
 from autovqe.ansatz_ir import (
     AnsatzSpec,
-    LayerSpec,
     OperationSpec,
     ParameterExpression,
+)
+from autovqe.backend import (
+    CANONICAL_BASIS_GATES,
+    backend_target_from_problem,
+    canonical_backend_target,
 )
 from autovqe.contracts import (
     BackendSpec,
     EncodingSpec,
     PauliTerm,
     PublicProblem,
-    ReferenceSpec,
+    InitialStateSpec,
     SectorSpec,
 )
 from autovqe.evaluator import (
-    CANONICAL_BASIS_GATES,
     EvaluationProtocol,
-    backend_target_from_public,
-    canonical_backend_target,
     evaluate_public_problem,
 )
 
@@ -31,7 +32,7 @@ def problem_with_backend(backend: BackendSpec) -> PublicProblem:
         pauli_terms=(PauliTerm("ZI", 1.0),),
         encoding=EncodingSpec(),
         sector=SectorSpec(),
-        reference=ReferenceSpec(),
+        initial_state=InitialStateSpec(),
         backend=backend,
     )
 
@@ -41,17 +42,13 @@ def exchange_spec() -> AnsatzSpec:
         name="backend_boundary_exchange",
         num_qubits=2,
         parameters=("theta",),
-        layers=(
-            LayerSpec(
-                operations=(
-                    OperationSpec(
-                        macro="XYExchange",
-                        qubits=(0, 1),
-                        parameters={
-                            "angle": ParameterExpression.parameter("theta")
-                        },
-                    ),
-                ),
+        operations=(
+            OperationSpec(
+                macro="XYExchange",
+                qubits=(0, 1),
+                parameters={
+                    "angle": ParameterExpression.parameter("theta")
+                },
             ),
         ),
     )
@@ -63,18 +60,18 @@ class EvaluatorBackendBoundaryTests(unittest.TestCase):
 
     def test_empty_backend_uses_logical_target_and_still_emits_canonical_metrics(self) -> None:
         problem = problem_with_backend(BackendSpec())
-        self.assertIsNone(backend_target_from_public(problem))
+        self.assertIsNone(backend_target_from_problem(problem))
 
         result = evaluate_public_problem(problem, exchange_spec(), protocol=self.protocol)
 
-        self.assertTrue(result.receipt.valid, result.receipt.violations)
-        metrics = result.receipt.metrics
+        self.assertTrue(result.result.valid, result.result.violations)
+        metrics = result.result.metrics
         self.assertEqual(metrics["template_twoq_count"], 1)
-        self.assertEqual(metrics["generic_worst_twoq_count"], 1)
+        self.assertEqual(metrics["audit_worst_twoq_count"], 1)
         self.assertEqual(metrics["final_twoq_count"], 1)
         for prefix in (
             "canonical_template",
-            "canonical_generic_worst",
+            "canonical_audit_worst",
             "canonical_final",
         ):
             for name in ("singleq_count", "twoq_count", "total_gate_count", "depth"):
@@ -97,16 +94,16 @@ class EvaluatorBackendBoundaryTests(unittest.TestCase):
             declared, exchange_spec(), protocol=self.protocol
         )
 
-        self.assertTrue(empty_result.receipt.valid, empty_result.receipt.violations)
-        self.assertTrue(declared_result.receipt.valid, declared_result.receipt.violations)
+        self.assertTrue(empty_result.result.valid, empty_result.result.violations)
+        self.assertTrue(declared_result.result.valid, declared_result.result.violations)
         empty_canonical = {
             key: value
-            for key, value in empty_result.receipt.metrics.items()
+            for key, value in empty_result.result.metrics.items()
             if key.startswith("canonical_")
         }
         declared_canonical = {
             key: value
-            for key, value in declared_result.receipt.metrics.items()
+            for key, value in declared_result.result.metrics.items()
             if key.startswith("canonical_")
         }
         self.assertEqual(empty_canonical, declared_canonical)
@@ -120,13 +117,13 @@ class EvaluatorBackendBoundaryTests(unittest.TestCase):
             BackendSpec(basis_gates=("rz", "sx", "x", "cx", "unitary"))
         )
         forged = exchange_spec().to_dict()
-        forged["layers"][0]["operations"][0]["macro"] = "UnitaryGate"
+        forged["operations"][0]["macro"] = "UnitaryGate"
 
         result = evaluate_public_problem(problem, forged, protocol=self.protocol)
 
-        self.assertFalse(result.receipt.valid)
-        self.assertTrue(result.receipt.violations)
-        self.assertIn("unknown or untrusted macro", result.receipt.violations[0])
+        self.assertFalse(result.result.valid)
+        self.assertTrue(result.result.violations)
+        self.assertIn("unknown or untrusted macro", result.result.violations[0])
 
 
 if __name__ == "__main__":

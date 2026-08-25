@@ -21,8 +21,6 @@
     { "pauli": "IIIIIIIIXI", "coeff": -1.0 },
     { "pauli": "IIIIIIIIIX", "coeff": -1.0 }
   ],
-  "reference_energy": -12.381489999654752,
-  "reference_note": "Exact diagonalization in the Pauli convention used by prepare.py.",
   "basis_gates": [
     "rx",
     "ry",

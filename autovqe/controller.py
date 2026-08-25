@@ -1,3 +1,10 @@
+"""Trusted, compact controller for the AutoVQE research loop.
+
+The external agent proposes scientific ideas and typed circuits. The
+controller chooses deterministic evidence identifiers, fixes the evaluation
+stage, performs every measurement, and records the resulting evidence.
+"""
+
 from __future__ import annotations
 
 import copy
@@ -8,36 +15,47 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .ansatz_ir import AnsatzSpec
+from .ansatz_ir import AnsatzIRValidationError, AnsatzSpec
 from .compiler import compile_ansatz
-from .contracts import PublicProblem, assert_agent_safe
+from .contracts import PublicProblem
 from .evaluator import (
     EvaluationProtocol,
+    audit_public_candidate,
     candidate_identity,
     evaluate_public_problem,
-    hamiltonian_from_public,
 )
+from .problem import hamiltonian_from_problem
 from .probes import (
     EXACT_SYMMETRY_TOLERANCE,
-    ProbeReceipt,
+    ProbeValidationError,
+    ProbeResult,
     algebraic_probe_cost_units,
     energy_from_circuit,
     generator_from_recipe,
+    initial_state_circuit,
+    initial_state_moments,
     operation_symmetry_residuals,
-    reference_moments,
     run_public_probe,
+    validate_special_operation_relevance,
     validate_symmetry_generator,
 )
 from .research import (
+    COMMIT_ENERGY_TOLERANCE,
     EvaluationStage,
     Lifecycle,
+    ProbeVerdict,
     ResearchLoop,
     ResearchState,
+    TransitionError,
+    comparison_dominates_target,
+    comparison_point,
+    derived_negative_close_evidence,
+    validate_negative_close_coverage,
 )
 
 
 class ControllerError(RuntimeError):
-    """Raised when an external action violates the trusted controller contract."""
+    """Raised when an external action violates the controller contract."""
 
 
 MAX_CANDIDATE_OPERATIONS = 256
@@ -52,18 +70,25 @@ MAX_ACTIVE_CANDIDATES_PER_HYPOTHESIS = 2
 MAX_EXTERNAL_ACTION_BYTES = 1_000_000
 MAX_HISTORY_EVENTS = 200
 MIN_SMOKE_ENERGY_IMPROVEMENT = 1e-6
+SMOKE_EVALUATION_PROTOCOL = EvaluationProtocol(max_evals=32, restarts=1, seed=7)
+PROMOTION_EVALUATION_PROTOCOL = EvaluationProtocol(
+    max_evals=96, restarts=3, seed=997
+)
 
 EXACT_SYMMETRY_CLAIM = "exact_pauli_symmetry"
 STRUCTURE_CLAIM = "ansatz_structure"
 NULL_CONTROL_CLAIM = "null_control"
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_NEW_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$")
 
 
 @dataclass(frozen=True)
-class ControllerReceipt:
+class StepResult:
+    """Compact response to one external action."""
+
     action_type: str
     result: dict[str, Any]
-    state: dict[str, Any]
+    state_summary: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -80,13 +105,22 @@ def _strict_action(
     extra = set(action) - required - optional
     if missing or extra:
         raise ControllerError(
-            f"invalid external action fields: missing={sorted(missing)} extra={sorted(extra)}"
+            f"invalid external action fields: missing={sorted(missing)} "
+            f"extra={sorted(extra)}"
         )
 
 
-def _nonempty_id(value: Any, field: str) -> str:
+def _identifier(value: Any, field: str) -> str:
     if not isinstance(value, str) or not _ID_RE.fullmatch(value):
         raise ControllerError(f"{field} must match {_ID_RE.pattern!r}")
+    return value
+
+
+def _new_identifier(value: Any, field: str) -> str:
+    """Validate agent-created IDs while leaving room for controller prefixes."""
+
+    if not isinstance(value, str) or not _NEW_ID_RE.fullmatch(value):
+        raise ControllerError(f"{field} must match {_NEW_ID_RE.pattern!r}")
     return value
 
 
@@ -96,81 +130,162 @@ def _mapping(value: Any, field: str) -> dict[str, Any]:
     return copy.deepcopy(dict(value))
 
 
-def _nonempty_text(value: Any, field: str) -> str:
+def _text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ControllerError(f"{field} must be a non-empty string")
     return value.strip()
 
 
-def _id_list(value: Any, field: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or not value:
-        raise ControllerError(f"{field} must be a non-empty list of IDs")
-    identifiers = tuple(_nonempty_id(item, field) for item in value)
-    if len(set(identifiers)) != len(identifiers):
-        raise ControllerError(f"{field} must not contain duplicate IDs")
-    return identifiers
+def _text_metadata(
+    value: Any,
+    field: str,
+    *,
+    allowed: set[str],
+) -> dict[str, str]:
+    metadata = _mapping(value, field)
+    extra = set(metadata) - allowed
+    if extra:
+        raise ControllerError(f"{field} contains unsupported fields: {sorted(extra)}")
+    return {key: _text(item, f"{field}.{key}") for key, item in metadata.items()}
 
 
-def _preregistered_fields(metadata: Mapping[str, Any]) -> tuple[str, ...]:
-    return tuple(
-        field
+def _preregistered(metadata: Mapping[str, Any]) -> bool:
+    return any(
+        isinstance(metadata.get(field), str) and str(metadata[field]).strip()
         for field in ("prediction", "falsifier")
-        if isinstance(metadata.get(field), str) and str(metadata[field]).strip()
     )
 
 
-def _probe_passed(receipt: ProbeReceipt) -> bool:
-    if receipt.probe_type == "normalized_commutator":
-        return bool(receipt.metrics.get("exact", False))
-    return False
+def _probe_passed(result: ProbeResult) -> bool:
+    return result.probe_type == "normalized_commutator" and bool(
+        result.metrics.get("exact", False)
+    )
 
 
-def _required_probe_ids(claim: Mapping[str, Any]) -> tuple[str, ...]:
-    raw = claim.get("required_probe_ids", ())
-    if raw in (None, ()):
-        return ()
-    if not isinstance(raw, list) or not all(isinstance(item, str) and item for item in raw):
-        raise ControllerError("claim.required_probe_ids must be a list of IDs")
-    return tuple(raw)
+def _next_stage(status: Lifecycle) -> EvaluationStage | None:
+    return {
+        Lifecycle.CANDIDATE: EvaluationStage.AUDIT,
+        Lifecycle.AUDITED: EvaluationStage.SMOKE,
+        Lifecycle.SMOKE: EvaluationStage.PROMOTION,
+    }.get(status)
 
 
-def _admission_probe_id(hypothesis_id: str) -> str:
-    return f"admission:{hypothesis_id}"
+def _has_fair_comparator(state: ResearchState, candidate_id: str) -> bool:
+    candidate = state.candidates[candidate_id]
+    return any(
+        record.candidate_id != candidate_id
+        and state.candidates[record.candidate_id].hypothesis_id
+        != candidate.hypothesis_id
+        and comparison_point(record) is not None
+        for record in state.evaluations.values()
+    )
+
+
+def _state_summary(state: ResearchState) -> dict[str, Any]:
+    hypotheses = {}
+    for hypothesis_id, record in sorted(state.hypotheses.items()):
+        next_action = {
+            Lifecycle.PROPOSED: "request_probe",
+            Lifecycle.READY: "submit_candidate",
+            Lifecycle.SUPPORTED: "submit_candidate",
+            Lifecycle.REFUTED: "revise_or_retire",
+            Lifecycle.INCONCLUSIVE: "revise_or_retire",
+        }.get(record.status)
+        hypotheses[hypothesis_id] = {
+            "status": record.status.value,
+            "next_action": next_action,
+        }
+    candidates: dict[str, Any] = {}
+    for candidate_id, record in sorted(state.candidates.items()):
+        stage = _next_stage(record.status)
+        branch = state.hypotheses[record.hypothesis_id]
+        if record.status is Lifecycle.PROMOTED:
+            next_action = (
+                "commit_or_dispose_after_comparison"
+                if _has_fair_comparator(state, candidate_id)
+                else "evaluate_different_hypothesis:promotion"
+            )
+        elif record.status is Lifecycle.RETIRED:
+            next_action = (
+                "revise"
+                if branch.status in {Lifecycle.READY, Lifecycle.SUPPORTED}
+                else None
+            )
+        else:
+            next_action = (
+                f"evaluate_candidate:{stage.value}" if stage is not None else None
+            )
+        candidates[candidate_id] = {
+            "hypothesis_id": record.hypothesis_id,
+            "status": record.status.value,
+            "next_action": next_action,
+        }
+    return {
+        "budget": {
+            "spent": state.spent_budget,
+            "remaining": state.remaining_budget,
+            "total": state.total_budget,
+        },
+        "last_seq": state.last_seq,
+        "terminal_decision": state.terminal_decision,
+        "hypotheses": hypotheses,
+        "candidates": candidates,
+    }
 
 
 def _resource_eligibility(metrics: Mapping[str, Any]) -> dict[str, Any]:
-    raw = {
-        name: int(metrics.get(name, fallback))
-        for name, fallback in {
-            "canonical_template_twoq_count": MAX_CANONICAL_TWOQ_GATES + 1,
-            "canonical_generic_worst_twoq_count": MAX_CANONICAL_TWOQ_GATES + 1,
-            "canonical_template_total_gate_count": MAX_CANONICAL_TOTAL_GATES + 1,
-            "canonical_generic_worst_total_gate_count": MAX_CANONICAL_TOTAL_GATES + 1,
-            "canonical_template_depth": MAX_CANONICAL_DEPTH + 1,
-            "canonical_generic_worst_depth": MAX_CANONICAL_DEPTH + 1,
-        }.items()
+    fallbacks = {
+        **{
+            f"{prefix}_twoq_count": MAX_CANONICAL_TWOQ_GATES + 1
+            for prefix in (
+                "template",
+                "audit_worst",
+                "canonical_template",
+                "canonical_audit_worst",
+            )
+        },
+        **{
+            f"{prefix}_total_gate_count": MAX_CANONICAL_TOTAL_GATES + 1
+            for prefix in (
+                "template",
+                "audit_worst",
+                "canonical_template",
+                "canonical_audit_worst",
+            )
+        },
+        **{
+            f"{prefix}_depth": MAX_CANONICAL_DEPTH + 1
+            for prefix in (
+                "template",
+                "audit_worst",
+                "canonical_template",
+                "canonical_audit_worst",
+            )
+        },
     }
-    # A candidate must fit both its symbolic template and all evaluator-owned
-    # generic bindings.  Taking the max prevents a circuit from becoming
-    # artificially cheap only at known numeric cancellation points.
+    inputs: dict[str, int] = {}
+    for name, fallback in fallbacks.items():
+        value = metrics.get(name, fallback)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            value = fallback
+        inputs[name] = int(value)
     observed = {
-        "canonical_conservative_twoq_count": max(
-            raw["canonical_template_twoq_count"],
-            raw["canonical_generic_worst_twoq_count"],
+        "conservative_twoq_count": max(
+            inputs[name] for name in inputs if name.endswith("_twoq_count")
         ),
-        "canonical_conservative_total_gate_count": max(
-            raw["canonical_template_total_gate_count"],
-            raw["canonical_generic_worst_total_gate_count"],
+        "conservative_total_gate_count": max(
+            inputs[name]
+            for name in inputs
+            if name.endswith("_total_gate_count")
         ),
-        "canonical_conservative_depth": max(
-            raw["canonical_template_depth"],
-            raw["canonical_generic_worst_depth"],
+        "conservative_depth": max(
+            inputs[name] for name in inputs if name.endswith("_depth")
         ),
     }
     limits = {
-        "canonical_conservative_twoq_count": MAX_CANONICAL_TWOQ_GATES,
-        "canonical_conservative_total_gate_count": MAX_CANONICAL_TOTAL_GATES,
-        "canonical_conservative_depth": MAX_CANONICAL_DEPTH,
+        "conservative_twoq_count": MAX_CANONICAL_TWOQ_GATES,
+        "conservative_total_gate_count": MAX_CANONICAL_TOTAL_GATES,
+        "conservative_depth": MAX_CANONICAL_DEPTH,
     }
     violations = [
         f"{name}={observed[name]} exceeds {limit}"
@@ -179,7 +294,7 @@ def _resource_eligibility(metrics: Mapping[str, Any]) -> dict[str, Any]:
     ]
     return {
         "eligible": not violations,
-        "inputs": raw,
+        "inputs": inputs,
         "observed": observed,
         "limits": limits,
         "violations": violations,
@@ -187,11 +302,7 @@ def _resource_eligibility(metrics: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class ResearchController:
-    """Validate agent actions and run evaluator-owned measurements.
-
-    External agents can request probes and evaluations, but cannot append
-    ``record_probe`` or ``record_evaluation`` events themselves.
-    """
+    """Validate agent actions and own every probe and evaluation result."""
 
     def __init__(
         self,
@@ -207,16 +318,11 @@ class ResearchController:
     def state(self) -> ResearchState:
         return self.loop.state
 
-    def _receipt(
-        self,
-        action_type: str,
-        events: list[Any],
-        result: Mapping[str, Any],
-    ) -> ControllerReceipt:
-        return ControllerReceipt(
+    def _result(self, action_type: str, result: Mapping[str, Any]) -> StepResult:
+        return StepResult(
             action_type=action_type,
             result=copy.deepcopy(dict(result)),
-            state=self.loop.state.to_dict(),
+            state_summary=_state_summary(self.loop.state),
         )
 
     def _ensure_capacity(
@@ -229,9 +335,9 @@ class ResearchController:
         state = self.loop.state
         terminal_reserve = 0 if terminal else 1
         if state.last_seq + 1 + events + terminal_reserve > MAX_HISTORY_EVENTS:
-            detail = "" if terminal else " while reserving one terminal-decision event"
+            suffix = "" if terminal else " while reserving one terminal event"
             raise ControllerError(
-                f"research run reached {MAX_HISTORY_EVENTS} event cap{detail}"
+                f"research run reached {MAX_HISTORY_EVENTS} event cap{suffix}"
             )
         if cost > state.remaining_budget + 1e-12:
             raise ControllerError(
@@ -242,83 +348,44 @@ class ResearchController:
         claim = _mapping(value, "claim")
         kind = claim.get("kind")
         if kind == EXACT_SYMMETRY_CLAIM:
-            missing = {"kind", "generator"} - set(claim)
-            extra = set(claim) - {"kind", "generator"}
-            if missing or extra:
+            if set(claim) != {"kind", "generator"}:
                 raise ControllerError(
                     "exact_pauli_symmetry claim fields must be exactly kind and generator"
                 )
-            generator_recipe = _mapping(claim["generator"], "claim.generator")
+            recipe = _mapping(claim["generator"], "claim.generator")
             try:
-                hamiltonian = hamiltonian_from_public(self.problem)
-                generator = generator_from_recipe(
-                    self.problem.num_qubits, generator_recipe
+                generator = generator_from_recipe(self.problem.num_qubits, recipe)
+                validate_symmetry_generator(
+                    hamiltonian_from_problem(self.problem), generator
                 )
-                # This rejects vacuous, non-Hermitian, and H-copy generators,
-                # but deliberately does not assume that the commutator is zero.
-                validate_symmetry_generator(hamiltonian, generator)
             except Exception as exc:
                 raise ControllerError(f"invalid symmetry generator: {exc}") from exc
-            return {"kind": kind, "generator": generator_recipe}
-
+            return {"kind": kind, "generator": recipe}
         if kind == STRUCTURE_CLAIM:
-            missing = {"kind", "family"} - set(claim)
-            extra = set(claim) - {"kind", "family"}
-            if missing or extra:
+            if set(claim) != {"kind", "family"}:
                 raise ControllerError(
                     "ansatz_structure claim fields must be exactly kind and family"
                 )
-            family = claim["family"]
-            if not isinstance(family, str) or not family.strip():
-                raise ControllerError("claim.family must be a non-empty string")
-            return {"kind": kind, "family": family.strip()}
-
+            return {"kind": kind, "family": _text(claim["family"], "claim.family")}
         if kind == NULL_CONTROL_CLAIM:
             if set(claim) != {"kind"}:
                 raise ControllerError("null_control claim contains unsupported fields")
             return {"kind": kind}
-
         raise ControllerError(
             "claim.kind must be exact_pauli_symmetry, ansatz_structure, or null_control"
         )
 
-    def _admit_non_algebraic_hypothesis(
-        self,
-        hypothesis_id: str,
-        kind: str,
-    ) -> Any:
-        return self.loop.dispatch(
-            {
-                "type": "record_probe",
-                "hypothesis_id": hypothesis_id,
-                "probe_id": _admission_probe_id(hypothesis_id),
-                "verdict": "supported",
-                "result": {
-                    "controller_passed": True,
-                    "admission": "non_algebraic_design_hypothesis",
-                    "claim_kind": kind,
-                    "algebraic_certificate": False,
-                },
-                "cost": 0.0,
-            }
-        )
-
-    def _propose_hypothesis(self, action: Mapping[str, Any]) -> ControllerReceipt:
+    def _propose_hypothesis(self, action: Mapping[str, Any]) -> StepResult:
         _strict_action(
             action,
             required={"type", "hypothesis_id", "claim"},
-            optional={"metadata", "cost"},
+            optional={"metadata"},
         )
-        hypothesis_id = _nonempty_id(action["hypothesis_id"], "hypothesis_id")
+        hypothesis_id = _new_identifier(action["hypothesis_id"], "hypothesis_id")
         if hypothesis_id in self.loop.state.hypotheses:
             raise ControllerError(f"hypothesis already exists: {hypothesis_id}")
-        raw_claim = _mapping(action["claim"], "claim")
-        raw_kind = raw_claim.get("kind")
-        auto_admit = raw_kind in {STRUCTURE_CLAIM, NULL_CONTROL_CLAIM}
-        # Reserve evaluator-owned budget/event capacity before algebraic
-        # generator validation, which may construct sparse operator products.
-        self._ensure_capacity(cost=0.1, events=2 if auto_admit else 1)
-        claim = self._validated_claim(raw_claim)
+        self._ensure_capacity(cost=0.1)
+        claim = self._validated_claim(action["claim"])
         active = sum(
             record.status not in {Lifecycle.REVISED, Lifecycle.RETIRED}
             for record in self.loop.state.hypotheses.values()
@@ -327,72 +394,233 @@ class ResearchController:
             raise ControllerError(
                 f"at most {MAX_ACTIVE_HYPOTHESES} hypotheses may be active"
             )
-        auto_admit = claim["kind"] in {STRUCTURE_CLAIM, NULL_CONTROL_CLAIM}
-        sanitized = {
-            "type": "propose_hypothesis",
-            "hypothesis_id": hypothesis_id,
-            "claim": claim,
-            "metadata": _mapping(action.get("metadata", {}), "metadata"),
-            "cost": 0.1,
-        }
-        events = [self.loop.dispatch(sanitized)]
-        if auto_admit:
-            events.append(self._admit_non_algebraic_hypothesis(hypothesis_id, claim["kind"]))
-        return self._receipt(
+        self.loop.dispatch(
+            {
+                "type": "propose_hypothesis",
+                "hypothesis_id": hypothesis_id,
+                "claim": claim,
+                "metadata": _text_metadata(
+                    action.get("metadata", {}),
+                    "metadata",
+                    allowed={"rationale", "prediction", "falsifier"},
+                ),
+                "cost": 0.1,
+            }
+        )
+        requires_probe = claim["kind"] == EXACT_SYMMETRY_CLAIM
+        return self._result(
             "propose_hypothesis",
-            events,
             {
                 "accepted": True,
                 "claim_kind": claim["kind"],
-                "requires_algebraic_probe": not auto_admit,
+                "requires_probe": requires_probe,
             },
         )
 
-    def _ensure_unique_candidate(self, spec: Mapping[str, Any]) -> None:
-        identity = candidate_identity(spec)
+    def _request_probe(self, action: Mapping[str, Any]) -> StepResult:
+        _strict_action(action, required={"type", "hypothesis_id"})
+        hypothesis_id = _identifier(action["hypothesis_id"], "hypothesis_id")
+        hypothesis = self.loop.state.hypotheses.get(hypothesis_id)
+        if hypothesis is None:
+            raise ControllerError(f"unknown hypothesis: {hypothesis_id}")
+        if hypothesis.status is not Lifecycle.PROPOSED:
+            raise ControllerError(
+                f"cannot probe hypothesis {hypothesis_id} in {hypothesis.status.value}"
+            )
+        if hypothesis.claim.get("kind") != EXACT_SYMMETRY_CLAIM:
+            raise ControllerError("only exact_pauli_symmetry claims require probes")
+        probe_id = f"probe:{hypothesis_id}"
+        if probe_id in self.loop.state.probes:
+            raise ControllerError(f"probe already exists: {probe_id}")
+        request = {
+            "type": "normalized_commutator",
+            "generator": copy.deepcopy(hypothesis.claim["generator"]),
+        }
+        try:
+            probe_cost = algebraic_probe_cost_units(
+                hamiltonian_from_problem(self.problem), request
+            )
+        except Exception as exc:
+            raise ControllerError(f"probe preflight failed: {exc}") from exc
+        self._ensure_capacity(cost=probe_cost)
+        result = run_public_probe(self.problem, request)
+        if not math.isclose(result.cost_units, probe_cost, rel_tol=0.0, abs_tol=1e-12):
+            raise ControllerError("probe preflight and result costs disagree")
+        passed = _probe_passed(result)
+        payload = result.to_dict()
+        payload.update({"probe_id": probe_id, "passed": passed})
+        self.loop.dispatch(
+            {
+                "type": "record_probe",
+                "hypothesis_id": hypothesis_id,
+                "probe_id": probe_id,
+                "verdict": (
+                    ProbeVerdict.SUPPORTED.value
+                    if passed
+                    else ProbeVerdict.REFUTED.value
+                ),
+                "result": result.to_dict(),
+                "cost": result.cost_units,
+            }
+        )
+        return self._result("request_probe", payload)
+
+    def _ensure_unique_candidate(
+        self,
+        spec: Mapping[str, Any],
+        *,
+        representation_repair_source: str | None = None,
+    ) -> None:
+        try:
+            identity = candidate_identity(spec)
+        except Exception as exc:
+            raise ControllerError(f"invalid candidate: {exc}") from exc
         duplicates = sorted(
             record.candidate_id
             for record in self.loop.state.candidates.values()
             if candidate_identity(record.spec) == identity
         )
+        if duplicates == [representation_repair_source]:
+            source = self.loop.state.candidates[representation_repair_source]
+            evaluations = [
+                self.loop.state.evaluations[evaluation_id]
+                for evaluation_id in source.evaluation_ids
+            ]
+            if (
+                evaluations
+                and all(
+                    evaluation.stage is EvaluationStage.AUDIT
+                    for evaluation in evaluations
+                )
+                and any(not evaluation.passed for evaluation in evaluations)
+            ):
+                # No optimizer call was made. Permit one representation repair
+                # when equivalent shorthand is required to pass an atomic audit.
+                return
         if duplicates:
             raise ControllerError(
-                "candidate is semantically equivalent to an existing candidate; "
-                f"cosmetic renaming/re-layering is not a new experiment: {duplicates}"
+                "candidate is semantically equivalent to an existing candidate: "
+                f"{duplicates}"
             )
 
-    def _submit_candidate(self, action: Mapping[str, Any]) -> ControllerReceipt:
+    @staticmethod
+    def _enforcement(kind: str, *, preserves_symmetry: bool = False) -> str:
+        if kind == NULL_CONTROL_CLAIM:
+            return "diagnostic"
+        if preserves_symmetry:
+            return "preserve"
+        return {
+            EXACT_SYMMETRY_CLAIM: "unconstrained",
+            STRUCTURE_CLAIM: "unconstrained",
+        }[kind]
+
+    def _validated_symmetry_evidence_ids(
+        self,
+        raw: Any,
+        *,
+        primary_hypothesis_id: str,
+    ) -> list[str]:
+        if raw is None:
+            values: list[Any] = []
+        elif isinstance(raw, list):
+            values = list(raw)
+        else:
+            raise ControllerError("symmetry_evidence_ids must be a list")
+        evidence_ids = [
+            _identifier(value, "symmetry_evidence_ids") for value in values
+        ]
+        if len(set(evidence_ids)) != len(evidence_ids):
+            raise ControllerError("symmetry_evidence_ids must not contain duplicates")
+
+        primary = self.loop.state.hypotheses[primary_hypothesis_id]
+        if (
+            primary.claim.get("kind") == EXACT_SYMMETRY_CLAIM
+            and primary.status is Lifecycle.SUPPORTED
+        ):
+            evidence_ids.extend(primary.probe_ids)
+
+        result: list[str] = []
+        for evidence_id in sorted(set(evidence_ids)):
+            probe = self.loop.state.probes.get(evidence_id)
+            if probe is None or probe.verdict is not ProbeVerdict.SUPPORTED:
+                raise ControllerError(
+                    "symmetry_evidence_ids must cite evaluator-supported probes: "
+                    f"{evidence_id}"
+                )
+            hypothesis = self.loop.state.hypotheses[probe.hypothesis_id]
+            if hypothesis.claim.get("kind") != EXACT_SYMMETRY_CLAIM:
+                raise ControllerError(
+                    f"symmetry evidence is not an exact symmetry: {evidence_id}"
+                )
+            result.append(evidence_id)
+        return result
+
+    def _candidate_metadata(
+        self,
+        hypothesis_kind: str,
+        raw: Any,
+        *,
+        preserves_symmetry: bool = False,
+        revision: bool = False,
+    ) -> dict[str, Any]:
+        metadata = _text_metadata(
+            raw,
+            "metadata",
+            allowed={"prediction", "falsifier", "rationale"},
+        )
+        expected = self._enforcement(
+            hypothesis_kind, preserves_symmetry=preserves_symmetry
+        )
+        metadata["enforcement"] = expected
+        if hypothesis_kind != NULL_CONTROL_CLAIM and not _preregistered(metadata):
+            noun = "revision" if revision else "candidate"
+            raise ControllerError(
+                f"promotable {noun} metadata must preregister a non-empty "
+                "prediction or falsifier"
+            )
+        return metadata
+
+    def _submit_candidate(self, action: Mapping[str, Any]) -> StepResult:
         _strict_action(
             action,
             required={"type", "candidate_id", "hypothesis_id", "spec"},
-            optional={"metadata", "cost"},
+            optional={"metadata", "symmetry_evidence_ids"},
         )
-        candidate_id = _nonempty_id(action["candidate_id"], "candidate_id")
-        hypothesis_id = _nonempty_id(action["hypothesis_id"], "hypothesis_id")
+        candidate_id = _new_identifier(action["candidate_id"], "candidate_id")
+        hypothesis_id = _identifier(action["hypothesis_id"], "hypothesis_id")
+        if candidate_id in self.loop.state.candidates:
+            raise ControllerError(f"candidate already exists: {candidate_id}")
         hypothesis = self.loop.state.hypotheses.get(hypothesis_id)
         if hypothesis is None:
             raise ControllerError(f"unknown hypothesis: {hypothesis_id}")
-        spec = _mapping(action["spec"], "spec")
-        self._ensure_unique_candidate(spec)
-        metadata = _mapping(action.get("metadata", {}), "metadata")
-        expected_enforcement = {
-            EXACT_SYMMETRY_CLAIM: "preserve",
-            STRUCTURE_CLAIM: "unconstrained",
-            NULL_CONTROL_CLAIM: "diagnostic",
-        }[str(hypothesis.claim["kind"])]
-        if metadata.get("enforcement") != expected_enforcement:
+        if hypothesis.status not in {Lifecycle.READY, Lifecycle.SUPPORTED}:
             raise ControllerError(
-                f"{hypothesis.claim['kind']} candidate requires "
-                f"metadata.enforcement={expected_enforcement!r}"
+                f"candidate requires READY or SUPPORTED hypothesis; "
+                f"{hypothesis_id} is {hypothesis.status.value}"
             )
-        if (
-            hypothesis.claim["kind"] != NULL_CONTROL_CLAIM
-            and not _preregistered_fields(metadata)
+        spec = _mapping(action["spec"], "spec")
+        try:
+            parsed = AnsatzSpec.from_dict(spec)
+        except Exception as exc:
+            raise ControllerError(f"invalid candidate: {exc}") from exc
+        if hypothesis.claim["kind"] == NULL_CONTROL_CLAIM and (
+            parsed.parameters or parsed.operations
         ):
             raise ControllerError(
-                "promotable candidate metadata must preregister a non-empty "
-                "prediction or falsifier before submission"
+                "null_control candidate must be a typed no-op with no parameters "
+                "or operations"
             )
+        spec = parsed.to_dict()
+        self._ensure_unique_candidate(spec)
+        symmetry_evidence_ids = self._validated_symmetry_evidence_ids(
+            action.get("symmetry_evidence_ids"),
+            primary_hypothesis_id=hypothesis_id,
+        )
+        metadata = self._candidate_metadata(
+            str(hypothesis.claim["kind"]),
+            action.get("metadata", {}),
+            preserves_symmetry=bool(symmetry_evidence_ids),
+        )
         active = sum(
             record.hypothesis_id == hypothesis_id
             and record.status not in {Lifecycle.REVISED, Lifecycle.RETIRED}
@@ -400,275 +628,644 @@ class ResearchController:
         )
         if active >= MAX_ACTIVE_CANDIDATES_PER_HYPOTHESIS:
             raise ControllerError(
-                "at most "
-                f"{MAX_ACTIVE_CANDIDATES_PER_HYPOTHESIS} candidates may be active "
-                "per hypothesis"
+                f"at most {MAX_ACTIVE_CANDIDATES_PER_HYPOTHESIS} candidates may be "
+                "active per hypothesis"
             )
         self._ensure_capacity(cost=0.1)
-        event = self.loop.dispatch(
+        self.loop.dispatch(
             {
                 "type": "submit_candidate",
                 "candidate_id": candidate_id,
                 "hypothesis_id": hypothesis_id,
                 "spec": spec,
                 "metadata": metadata,
+                "symmetry_evidence_ids": symmetry_evidence_ids,
                 "cost": 0.1,
             }
         )
-        return self._receipt(
-            "submit_candidate",
-            [event],
-            {"accepted": True},
+        return self._result("submit_candidate", {"accepted": True})
+
+    def _compile_audit(self, candidate_id: str) -> tuple[bool, dict[str, Any]]:
+        candidate = self.loop.state.candidates[candidate_id]
+        hypothesis = self.loop.state.hypotheses[candidate.hypothesis_id]
+        is_null_control = hypothesis.claim.get("kind") == NULL_CONTROL_CLAIM
+        try:
+            parsed = AnsatzSpec.from_dict(candidate.spec)
+            if parsed.num_qubits != self.problem.num_qubits:
+                raise ControllerError("candidate num_qubits must match the problem")
+            compiled = compile_ansatz(parsed)
+            audit = compiled.audit
+            if audit.operations > MAX_CANDIDATE_OPERATIONS:
+                raise ControllerError(
+                    f"candidate exceeds operation cap {MAX_CANDIDATE_OPERATIONS}"
+                )
+            if audit.unique_trainable_params > MAX_CANDIDATE_PARAMETERS:
+                raise ControllerError(
+                    f"candidate exceeds parameter cap {MAX_CANDIDATE_PARAMETERS}"
+                )
+            if audit.spec_nodes > MAX_CANDIDATE_SPEC_NODES:
+                raise ControllerError(
+                    f"candidate exceeds spec-node cap {MAX_CANDIDATE_SPEC_NODES}"
+                )
+            if not is_null_control and audit.operations <= 0:
+                raise ControllerError("candidate requires at least one operation")
+            if not is_null_control and audit.unique_trainable_params <= 0:
+                raise ControllerError(
+                    "candidate requires at least one trainable parameter"
+                )
+            excessive_fanout = {
+                name: occurrences
+                for name, occurrences in audit.parameter_occurrences.items()
+                if occurrences > MAX_PARAMETER_FANOUT
+            }
+            if excessive_fanout:
+                raise ControllerError(
+                    f"parameter fan-out exceeds {MAX_PARAMETER_FANOUT}: "
+                    f"{excessive_fanout}"
+                )
+
+            hamiltonian_labels = {term.pauli for term in self.problem.pauli_terms}
+            for operation in parsed.operations:
+                if operation.macro != "PauliRotation" or len(operation.qubits) <= 2:
+                    continue
+                local_pauli = operation.options["pauli"]
+                label = ["I"] * self.problem.num_qubits
+                for qubit, letter in zip(operation.qubits, local_pauli, strict=True):
+                    label[self.problem.num_qubits - qubit - 1] = letter
+                if "".join(label) not in hamiltonian_labels:
+                    raise ControllerError(
+                        "PauliRotation above locality 2 must be a Hamiltonian term"
+                    )
+
+            allowed_scales = {-2.0, -1.0, -0.5, 0.5, 1.0, 2.0}
+            unapproved_literals = [
+                literal.to_dict()
+                for literal in audit.fixed_literals
+                if literal.role != "scale"
+                or not any(
+                    math.isclose(
+                        literal.value, allowed, rel_tol=0.0, abs_tol=1e-12
+                    )
+                    for allowed in allowed_scales
+                )
+            ]
+            if unapproved_literals:
+                raise ControllerError(
+                    f"candidate contains unapproved fixed numeric literals: "
+                    f"{unapproved_literals}"
+                )
+
+            hypothesis = self.loop.state.hypotheses[candidate.hypothesis_id]
+            claim_kind = str(hypothesis.claim["kind"])
+            conservation_macros = sorted(
+                {
+                    operation.macro
+                    for operation in parsed.operations
+                    if operation.macro in {"XYExchange", "IsotropicExchange"}
+                }
+            )
+            if conservation_macros and not candidate.symmetry_evidence_ids:
+                raise ControllerError(
+                    "XYExchange and IsotropicExchange require a SUPPORTED "
+                    "exact_pauli_symmetry evidence probe"
+                )
+            if candidate.metadata.get("enforcement") != self._enforcement(
+                claim_kind,
+                preserves_symmetry=bool(candidate.symmetry_evidence_ids),
+            ):
+                raise ControllerError("candidate enforcement metadata is inconsistent")
+
+            symmetry_audit: dict[str, Any] | None = None
+            if candidate.symmetry_evidence_ids:
+                charges: dict[str, Any] = {}
+                constraints: dict[str, Any] = {}
+                zero = compiled.circuit.assign_parameters(
+                    {parameter: 0.0 for parameter in compiled.parameters.values()},
+                    inplace=False,
+                )
+                prepared = initial_state_circuit(self.problem)
+                prepared.compose(zero, inplace=True)
+                for evidence_id in candidate.symmetry_evidence_ids:
+                    probe = self.loop.state.probes[evidence_id]
+                    symmetry_hypothesis = self.loop.state.hypotheses[
+                        probe.hypothesis_id
+                    ]
+                    recipe = symmetry_hypothesis.claim.get("generator")
+                    if not isinstance(recipe, Mapping):
+                        raise ControllerError(
+                            "exact symmetry evidence requires a generator recipe"
+                        )
+                    charge = generator_from_recipe(self.problem.num_qubits, recipe)
+                    charges[evidence_id] = charge
+                    residuals = operation_symmetry_residuals(
+                        self.problem.num_qubits, parsed.operations, charge
+                    )
+                    max_residual = max(residuals, default=0.0)
+                    if max_residual > EXACT_SYMMETRY_TOLERANCE:
+                        raise ControllerError(
+                            "candidate operation breaks a cited exact symmetry: "
+                            f"evidence={evidence_id} residual={max_residual:.3e}"
+                        )
+                    sector_mean, sector_variance = initial_state_moments(
+                        prepared, charge
+                    )
+                    if sector_variance > EXACT_SYMMETRY_TOLERANCE:
+                        raise ControllerError(
+                            "initial state is not in a definite sector of cited "
+                            f"symmetry {evidence_id}"
+                        )
+                    constraints[evidence_id] = {
+                        "hypothesis_id": probe.hypothesis_id,
+                        "hamiltonian_residual": probe.result["metrics"]["residual"],
+                        "max_operation_residual": max_residual,
+                        "initial_state_mean": sector_mean,
+                        "initial_state_variance": sector_variance,
+                    }
+
+                relevance: list[dict[str, Any]] = []
+                for operation_index, operation in enumerate(parsed.operations):
+                    if operation.macro not in {
+                        "XYExchange",
+                        "IsotropicExchange",
+                    }:
+                        continue
+                    relevant_constraints: dict[str, Any] = {}
+                    relevance_failures: dict[str, str] = {}
+                    for evidence_id, charge in charges.items():
+                        try:
+                            (
+                                touching_norm,
+                                relevant_fraction,
+                                residual,
+                                conditioned_symmetry_residual,
+                                conditioned_sector_variance,
+                            ) = (
+                                validate_special_operation_relevance(
+                                    self.problem.num_qubits,
+                                    operation,
+                                    charge,
+                                    symmetry_residual=constraints[evidence_id][
+                                        "hamiltonian_residual"
+                                    ],
+                                    sector_variance=constraints[evidence_id][
+                                        "initial_state_variance"
+                                    ],
+                                )
+                            )
+                        except ProbeValidationError as exc:
+                            relevance_failures[evidence_id] = str(exc)
+                            continue
+                        relevant_constraints[evidence_id] = {
+                            "touching_charge_norm": touching_norm,
+                            "relevant_charge_fraction": relevant_fraction,
+                            "residual": residual,
+                            "conditioned_symmetry_residual": (
+                                conditioned_symmetry_residual
+                            ),
+                            "conditioned_sector_variance": (
+                                conditioned_sector_variance
+                            ),
+                        }
+                    if not relevant_constraints:
+                        raise ControllerError(
+                            "special conservation gate has no relevant cited symmetry "
+                            f"on operation {operation_index}: {relevance_failures}"
+                        )
+                    relevance.append(
+                        {
+                            "operation_index": operation_index,
+                            "macro": operation.macro,
+                            "constraints": relevant_constraints,
+                        }
+                    )
+                symmetry_audit = {
+                    "constraints": constraints,
+                    "special_operation_relevance": relevance,
+                }
+
+            resource = audit_public_candidate(self.problem, parsed)
+            policy = _resource_eligibility(resource.metrics)
+            violations = list(resource.violations) + list(policy["violations"])
+            passed = bool(resource.valid and policy["eligible"] and not violations)
+            result: dict[str, Any] = {
+                "valid": passed,
+                "audit": audit.to_dict(),
+                "metrics": dict(resource.metrics),
+                "resource_policy": policy,
+                "violations": violations,
+            }
+            if symmetry_audit is not None:
+                result["symmetry_audit"] = symmetry_audit
+            return passed, result
+        except (ControllerError, ProbeValidationError, AnsatzIRValidationError) as exc:
+            return False, {
+                "valid": False,
+                "violations": [f"{type(exc).__name__}: {exc}"],
+            }
+        except Exception as exc:
+            raise ControllerError(
+                f"candidate audit infrastructure failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    def _baseline_energy(self, spec: Mapping[str, Any]) -> float:
+        compiled = compile_ansatz(spec)
+        zero = compiled.circuit.assign_parameters(
+            {parameter: 0.0 for parameter in compiled.parameters.values()},
+            inplace=False,
+        )
+        prepared = initial_state_circuit(self.problem)
+        prepared.compose(zero, inplace=True)
+        return energy_from_circuit(prepared, hamiltonian_from_problem(self.problem))
+
+    @staticmethod
+    def _compact_evaluation(result: Any) -> dict[str, Any]:
+        return {
+            "valid": bool(result.valid),
+            "best_energy": result.best_energy,
+            "trace_summary": [list(point) for point in result.trace_summary],
+            "objective_calls": result.objective_calls,
+            "objective_energy_span": result.objective_energy_span,
+            "hamiltonian_active_norm": result.hamiltonian_active_norm,
+            "objective_activity_fraction": result.objective_activity_fraction,
+            "constant_hamiltonian": result.constant_hamiltonian,
+            "optimizer": result.optimizer,
+            "seed": result.seed,
+            "audit": copy.deepcopy(dict(result.audit)),
+            "metrics": copy.deepcopy(dict(result.metrics)),
+            "violations": list(result.violations),
+        }
+
+    def _fair_comparators(self, candidate_id: str) -> list[dict[str, Any]]:
+        target = self.loop.state.candidates[candidate_id]
+        points: list[dict[str, Any]] = []
+        for record in self.loop.state.evaluations.values():
+            if record.candidate_id == candidate_id:
+                continue
+            comparator = self.loop.state.candidates[record.candidate_id]
+            if comparator.hypothesis_id == target.hypothesis_id:
+                continue
+            point = comparison_point(record)
+            if point is not None:
+                points.append(point)
+        return sorted(points, key=lambda point: point["candidate_id"])
+
+    def _pending_promotion_comparisons(self) -> list[str]:
+        return sorted(
+            candidate.candidate_id
+            for candidate in self.loop.state.candidates.values()
+            if candidate.status is Lifecycle.PROMOTED
+            and not self._fair_comparators(candidate.candidate_id)
         )
 
-    def _revise(self, action: Mapping[str, Any]) -> ControllerReceipt:
+    def _promoted_disposition_evidence(self, candidate_id: str) -> list[str]:
+        target_records = [
+            record
+            for record in self.loop.state.evaluations.values()
+            if record.candidate_id == candidate_id
+            and record.stage is EvaluationStage.PROMOTION
+            and record.passed
+        ]
+        if len(target_records) != 1:
+            raise ControllerError(
+                "promoted candidate lacks one passed promotion evaluation"
+            )
+        target = comparison_point(target_records[0])
+        if target is None:
+            raise ControllerError(
+                "promoted candidate lacks evaluator-owned comparison coordinates"
+            )
+        dominators = [
+            comparator
+            for comparator in self._fair_comparators(candidate_id)
+            if comparison_dominates_target(target, comparator)
+        ]
+        if not dominators:
+            raise ControllerError(
+                "promoted candidate can be revised or retired only after a fair "
+                "different-hypothesis promotion comparison dominates it"
+            )
+        return [
+            target_records[0].evaluation_id,
+            *(comparator["evaluation_id"] for comparator in dominators),
+        ]
+
+    def _evaluate_candidate(self, action: Mapping[str, Any]) -> StepResult:
+        _strict_action(action, required={"type", "candidate_id"})
+        candidate_id = _identifier(action["candidate_id"], "candidate_id")
+        candidate = self.loop.state.candidates.get(candidate_id)
+        if candidate is None:
+            raise ControllerError(f"unknown candidate: {candidate_id}")
+        stage = _next_stage(candidate.status)
+        if stage is None:
+            raise ControllerError(
+                f"candidate {candidate_id} has no next evaluation in "
+                f"{candidate.status.value}"
+            )
+        evaluation_id = f"evaluation:{candidate_id}:{stage.value}"
+        if evaluation_id in self.loop.state.evaluations:
+            raise ControllerError(f"evaluation already exists: {evaluation_id}")
+
+        if stage is EvaluationStage.AUDIT:
+            cost = 0.25
+            self._ensure_capacity(cost=cost)
+            passed, metrics = self._compile_audit(candidate_id)
+            event_metrics = metrics
+        else:
+            if stage is EvaluationStage.SMOKE:
+                protocol = SMOKE_EVALUATION_PROTOCOL
+                cost = 2.0
+            else:
+                protocol = PROMOTION_EVALUATION_PROTOCOL
+                cost = 6.0
+                if not self._fair_comparators(candidate_id):
+                    ready_comparators = sorted(
+                        record.candidate_id
+                        for record in self.loop.state.candidates.values()
+                        if record.candidate_id != candidate_id
+                        and record.hypothesis_id != candidate.hypothesis_id
+                        and record.status is Lifecycle.SMOKE
+                    )
+                    if not ready_comparators:
+                        raise ControllerError(
+                            "promotion requires a different-hypothesis competitor or "
+                            "control that already passed smoke"
+                        )
+                    # The first promotion must leave enough budget to run the
+                    # already-smoked comparator at the same fixed protocol.
+                    self._ensure_capacity(cost=2.0 * cost, events=2)
+                else:
+                    self._ensure_capacity(cost=cost)
+            if stage is EvaluationStage.SMOKE:
+                self._ensure_capacity(cost=cost)
+            try:
+                baseline = self._baseline_energy(candidate.spec)
+            except Exception as exc:
+                raise ControllerError(
+                    f"baseline evaluation failed before candidate optimization: {exc}"
+                ) from exc
+            run = evaluate_public_problem(self.problem, candidate.spec, protocol=protocol)
+            evaluation = run.result
+            if not evaluation.valid:
+                raise ControllerError(
+                    "candidate optimizer failed without producing scientific evidence: "
+                    f"{list(evaluation.violations)}"
+                )
+            metrics = self._compact_evaluation(evaluation)
+            event_metrics = evaluation.to_dict()
+            event_metrics.pop("optimized_parameter_binding", None)
+            policy = _resource_eligibility(evaluation.metrics)
+            metrics["resource_policy"] = policy
+            event_metrics["resource_policy"] = copy.deepcopy(policy)
+            metrics["baseline_energy"] = baseline
+            event_metrics["baseline_energy"] = baseline
+            improvement = (
+                None
+                if evaluation.best_energy is None
+                else baseline - evaluation.best_energy
+            )
+            metrics["energy_improvement"] = improvement
+            event_metrics["energy_improvement"] = improvement
+            threshold = max(
+                MIN_SMOKE_ENERGY_IMPROVEMENT,
+                MIN_SMOKE_ENERGY_IMPROVEMENT * abs(baseline),
+            )
+            metrics["required_energy_improvement"] = threshold
+            event_metrics["required_energy_improvement"] = threshold
+            passed = bool(
+                evaluation.valid
+                and policy["eligible"]
+                and improvement is not None
+                and improvement >= threshold
+            )
+            hypothesis = self.loop.state.hypotheses[candidate.hypothesis_id]
+            if (
+                stage is EvaluationStage.SMOKE
+                and hypothesis.claim.get("kind") == NULL_CONTROL_CLAIM
+            ):
+                # A control must reach the same fixed promotion-budget
+                # comparison even though it is not expected to improve itself.
+                passed = bool(evaluation.valid and policy["eligible"])
+            if (
+                stage is EvaluationStage.PROMOTION
+                and hypothesis.claim.get("kind") == NULL_CONTROL_CLAIM
+            ):
+                passed = False
+                metrics["promotion_blocked_reason"] = (
+                    "null_control candidates are diagnostic and cannot be promoted"
+                )
+                event_metrics["promotion_blocked_reason"] = metrics[
+                    "promotion_blocked_reason"
+                ]
+            if passed and stage is EvaluationStage.PROMOTION:
+                smoke_energies = [
+                    record.metrics.get("best_energy")
+                    for record in self.loop.state.evaluations.values()
+                    if record.candidate_id == candidate_id
+                    and record.stage is EvaluationStage.SMOKE
+                    and record.passed
+                ]
+                smoke_energies = [
+                    float(value) for value in smoke_energies if value is not None
+                ]
+                passed = bool(
+                    smoke_energies
+                    and evaluation.best_energy is not None
+                    and evaluation.best_energy
+                    <= min(smoke_energies) + 5e-4
+                )
+
+        self.loop.dispatch(
+            {
+                "type": "record_evaluation",
+                "candidate_id": candidate_id,
+                "evaluation_id": evaluation_id,
+                "stage": stage.value,
+                "passed": bool(passed),
+                "metrics": event_metrics,
+                "cost": cost,
+            }
+        )
+        return self._result(
+            "evaluate_candidate",
+            {
+                "candidate_id": candidate_id,
+                "evaluation_id": evaluation_id,
+                "stage": stage.value,
+                "passed": bool(passed),
+                **metrics,
+            },
+        )
+
+    def _revise(self, action: Mapping[str, Any]) -> StepResult:
         _strict_action(
             action,
             required={"type", "entity", "source_id", "new_id", "replacement", "reason"},
-            optional={"metadata", "cost"},
+            optional={"metadata", "symmetry_evidence_ids"},
         )
         entity = action["entity"]
-        source_id = _nonempty_id(action["source_id"], "source_id")
-        new_id = _nonempty_id(action["new_id"], "new_id")
+        source_id = _identifier(action["source_id"], "source_id")
+        new_id = _new_identifier(action["new_id"], "new_id")
+        reason = _text(action["reason"], "reason")
         replacement = _mapping(action["replacement"], "replacement")
-        reason = action["reason"]
-        revision_metadata = _mapping(action.get("metadata", {}), "metadata")
-        if not isinstance(reason, str) or not reason.strip():
-            raise ControllerError("reason must be a non-empty string")
-
-        auto_admit = False
-        capacity_checked = False
+        metadata = _mapping(action.get("metadata", {}), "metadata")
         if entity == "hypothesis":
+            if "symmetry_evidence_ids" in action:
+                raise ControllerError(
+                    "symmetry_evidence_ids applies only to candidate revisions"
+                )
             source = self.loop.state.hypotheses.get(source_id)
             if source is None:
                 raise ControllerError(f"unknown hypothesis: {source_id}")
-            raw_kind = replacement.get("kind")
-            auto_admit = raw_kind in {STRUCTURE_CLAIM, NULL_CONTROL_CLAIM}
-            self._ensure_capacity(cost=0.1, events=2 if auto_admit else 1)
-            capacity_checked = True
+            if source.status is Lifecycle.REVISED:
+                raise ControllerError(f"hypothesis is already revised: {source_id}")
+            metadata = _text_metadata(
+                metadata,
+                "metadata",
+                allowed={"rationale", "prediction", "falsifier"},
+            )
             replacement = self._validated_claim(replacement)
-            auto_admit = replacement["kind"] in {
-                STRUCTURE_CLAIM,
-                NULL_CONTROL_CLAIM,
-            }
             active = sum(
                 record.status not in {Lifecycle.REVISED, Lifecycle.RETIRED}
                 for record in self.loop.state.hypotheses.values()
+                if record.hypothesis_id != source_id
             )
-            if source.status in {Lifecycle.REVISED, Lifecycle.RETIRED}:
-                active += 1
-            if active > MAX_ACTIVE_HYPOTHESES:
-                raise ControllerError(
-                    f"at most {MAX_ACTIVE_HYPOTHESES} hypotheses may be active"
-                )
+            if active >= MAX_ACTIVE_HYPOTHESES:
+                raise ControllerError("hypothesis revision would exceed the active cap")
         elif entity == "candidate":
             source = self.loop.state.candidates.get(source_id)
             if source is None:
                 raise ControllerError(f"unknown candidate: {source_id}")
-            if source.status is Lifecycle.PROMOTED:
+            if source.status is Lifecycle.REVISED:
                 raise ControllerError(
-                    f"promoted candidate {source_id} cannot be revised; commit it"
+                    f"candidate {source_id} cannot be revised in {source.status.value}"
                 )
             hypothesis = self.loop.state.hypotheses[source.hypothesis_id]
-            expected_enforcement = {
-                EXACT_SYMMETRY_CLAIM: "preserve",
-                STRUCTURE_CLAIM: "unconstrained",
-                NULL_CONTROL_CLAIM: "diagnostic",
-            }[str(hypothesis.claim["kind"])]
-            supplied_enforcement = revision_metadata.get("enforcement")
-            if (
-                supplied_enforcement is not None
-                and supplied_enforcement != expected_enforcement
+            try:
+                parsed = AnsatzSpec.from_dict(replacement)
+            except Exception as exc:
+                raise ControllerError(f"invalid candidate revision: {exc}") from exc
+            if hypothesis.claim["kind"] == NULL_CONTROL_CLAIM and (
+                parsed.parameters or parsed.operations
             ):
                 raise ControllerError(
-                    f"{hypothesis.claim['kind']} candidate revision requires "
-                    f"metadata.enforcement={expected_enforcement!r} when supplied"
+                    "null_control candidate revision must be a typed no-op with no "
+                    "parameters or operations"
                 )
-            revision_metadata["enforcement"] = expected_enforcement
-            if (
-                hypothesis.claim["kind"] != NULL_CONTROL_CLAIM
-                and not _preregistered_fields(revision_metadata)
-            ):
-                raise ControllerError(
-                    "promotable candidate revision must preregister a new non-empty "
-                    "prediction or falsifier in metadata"
+            replacement = parsed.to_dict()
+            symmetry_evidence_ids = (
+                self._validated_symmetry_evidence_ids(
+                    action["symmetry_evidence_ids"],
+                    primary_hypothesis_id=source.hypothesis_id,
                 )
-            self._ensure_unique_candidate(replacement)
+                if "symmetry_evidence_ids" in action
+                else list(source.symmetry_evidence_ids)
+            )
+            metadata = self._candidate_metadata(
+                str(hypothesis.claim["kind"]),
+                metadata,
+                preserves_symmetry=bool(symmetry_evidence_ids),
+                revision=True,
+            )
+            self._ensure_unique_candidate(
+                replacement,
+                representation_repair_source=source_id,
+            )
             active = sum(
                 record.hypothesis_id == source.hypothesis_id
+                and record.candidate_id != source_id
                 and record.status not in {Lifecycle.REVISED, Lifecycle.RETIRED}
                 for record in self.loop.state.candidates.values()
             )
-            if source.status in {Lifecycle.REVISED, Lifecycle.RETIRED}:
-                active += 1
-            if active > MAX_ACTIVE_CANDIDATES_PER_HYPOTHESIS:
-                raise ControllerError(
-                    "candidate revision would exceed the active-candidate cap"
-                )
+            if active >= MAX_ACTIVE_CANDIDATES_PER_HYPOTHESIS:
+                raise ControllerError("candidate revision would exceed the active cap")
         else:
             raise ControllerError("entity must be hypothesis or candidate")
-
-        if not capacity_checked:
-            self._ensure_capacity(cost=0.1, events=1)
-        event = self.loop.dispatch(
+        self._ensure_capacity(cost=0.1)
+        evidence_ids = (
+            self._promoted_disposition_evidence(source_id)
+            if entity == "candidate"
+            and self.loop.state.candidates[source_id].status is Lifecycle.PROMOTED
+            else []
+        )
+        self.loop.dispatch(
             {
                 "type": "revise",
                 "entity": entity,
                 "source_id": source_id,
                 "new_id": new_id,
                 "replacement": replacement,
-                "reason": reason.strip(),
-                "metadata": revision_metadata,
+                "reason": reason,
+                "metadata": metadata,
+                "symmetry_evidence_ids": (
+                    symmetry_evidence_ids if entity == "candidate" else []
+                ),
+                "evidence_ids": evidence_ids,
                 "cost": 0.1,
             }
         )
-        events = [event]
-        if auto_admit:
-            events.append(
-                self._admit_non_algebraic_hypothesis(new_id, str(replacement["kind"]))
-            )
-        return self._receipt(
-            "revise",
-            events,
-            {
-                "accepted": True,
-                "auto_admitted": auto_admit,
-            },
-        )
+        return self._result("revise", {"accepted": True, "new_id": new_id})
 
-    def _resolve_evidence_ids(self, evidence_ids: tuple[str, ...]) -> None:
-        state = self.loop.state
-        for evidence_id in evidence_ids:
-            in_probes = evidence_id in state.probes
-            in_evaluations = evidence_id in state.evaluations
-            if in_probes and in_evaluations:
-                raise ControllerError(f"ambiguous evidence ID: {evidence_id}")
-            if not in_probes and not in_evaluations:
-                raise ControllerError(f"unknown evidence ID: {evidence_id}")
-
-    def _commit(self, action: Mapping[str, Any]) -> ControllerReceipt:
-        _strict_action(
-            action,
-            required={"type", "candidate_id", "evidence_ids", "comparison"},
-            optional={"metadata", "cost"},
-        )
-        candidate_id = _nonempty_id(action["candidate_id"], "candidate_id")
-        state = self.loop.state
-        candidate = state.candidates.get(candidate_id)
+    def _commit(self, action: Mapping[str, Any]) -> StepResult:
+        _strict_action(action, required={"type", "candidate_id"})
+        candidate_id = _identifier(action["candidate_id"], "candidate_id")
+        candidate = self.loop.state.candidates.get(candidate_id)
         if candidate is None:
             raise ControllerError(f"unknown candidate: {candidate_id}")
         if candidate.status is not Lifecycle.PROMOTED:
+            raise ControllerError("commit requires a passed promotion")
+        if not _preregistered(candidate.metadata):
             raise ControllerError(
-                f"commit requires PROMOTED candidate; {candidate_id} is "
-                f"{candidate.status.value}"
+                "commit requires a preregistered prediction or falsifier"
             )
-
-        preregistered_fields = _preregistered_fields(candidate.metadata)
-        if not preregistered_fields:
-            raise ControllerError(
-                "commit requires candidate metadata to preregister a non-empty "
-                "prediction or falsifier before evaluation"
-            )
-
-        evidence_ids = _id_list(action["evidence_ids"], "evidence_ids")
-        self._resolve_evidence_ids(evidence_ids)
-        promotion_ids = {
-            evaluation.evaluation_id
-            for evaluation in state.evaluations.values()
-            if evaluation.candidate_id == candidate_id
-            and evaluation.stage is EvaluationStage.PROMOTION
-            and evaluation.passed
-        }
-        if not promotion_ids.intersection(evidence_ids):
-            raise ControllerError(
-                "commit evidence_ids must include the candidate's passed promotion "
-                "evaluation"
-            )
-
-        comparison = _mapping(action["comparison"], "comparison")
-        mode = comparison.get("mode")
-        if mode == "evaluated_competitor":
-            if set(comparison) != {"mode", "candidate_id", "evidence_ids"}:
-                raise ControllerError(
-                    "evaluated_competitor comparison fields must be exactly "
-                    "mode, candidate_id, and evidence_ids"
-                )
-            competitor_id = _nonempty_id(
-                comparison["candidate_id"], "comparison.candidate_id"
-            )
-            if competitor_id == candidate_id:
-                raise ControllerError("comparison candidate must differ from commit candidate")
-            if competitor_id not in state.candidates:
-                raise ControllerError(f"unknown comparison candidate: {competitor_id}")
-            comparison_ids = _id_list(
-                comparison["evidence_ids"], "comparison.evidence_ids"
-            )
-            if not set(comparison_ids).issubset(evidence_ids):
-                raise ControllerError(
-                    "comparison evidence_ids must also appear in commit evidence_ids"
-                )
-            comparison_evaluations = [
-                state.evaluations.get(evidence_id) for evidence_id in comparison_ids
-            ]
-            if any(
-                record is None or record.candidate_id != competitor_id
-                for record in comparison_evaluations
-            ):
-                raise ControllerError(
-                    "evaluated competitor evidence must be evaluator records for that candidate"
-                )
-            if not any(
-                record is not None
-                and record.stage in {EvaluationStage.SMOKE, EvaluationStage.PROMOTION}
-                for record in comparison_evaluations
-            ):
-                raise ControllerError(
-                    "evaluated competitor requires at least one smoke or promotion result"
-                )
-            sanitized_comparison = {
-                "mode": mode,
-                "candidate_id": competitor_id,
-                "evidence_ids": list(comparison_ids),
-            }
-        elif mode == "documented_non_dominance":
-            if set(comparison) != {"mode", "reason", "evidence_ids"}:
-                raise ControllerError(
-                    "documented_non_dominance comparison fields must be exactly "
-                    "mode, reason, and evidence_ids"
-                )
-            reason = _nonempty_text(comparison["reason"], "comparison.reason")
-            comparison_ids = _id_list(
-                comparison["evidence_ids"], "comparison.evidence_ids"
-            )
-            if not set(comparison_ids).issubset(evidence_ids):
-                raise ControllerError(
-                    "comparison evidence_ids must also appear in commit evidence_ids"
-                )
-            if not any(evidence_id in promotion_ids for evidence_id in comparison_ids):
-                raise ControllerError(
-                    "documented non-dominance must cite the passed promotion evaluation"
-                )
-            sanitized_comparison = {
-                "mode": mode,
-                "reason": reason,
-                "evidence_ids": list(comparison_ids),
-            }
-        else:
-            raise ControllerError(
-                "comparison.mode must be evaluated_competitor or "
-                "documented_non_dominance"
-            )
-
-        metadata = _mapping(action.get("metadata", {}), "metadata")
-        metadata.update(
-            {
-                "evidence_ids": list(evidence_ids),
-                "comparison": sanitized_comparison,
-                "preregistered_fields": list(preregistered_fields),
-            }
+        promotions = sorted(
+            (record.evaluation_id, record)
+            for record in self.loop.state.evaluations.values()
+            if record.candidate_id == candidate_id
+            and record.stage is EvaluationStage.PROMOTION
+            and record.passed
         )
+        if len(promotions) != 1:
+            raise ControllerError("commit requires exactly one passed promotion result")
+        target = comparison_point(promotions[0][1])
+        if target is None:
+            raise ControllerError(
+                "passed promotion lacks evaluator-owned energy/resource evidence"
+            )
+        comparators = self._fair_comparators(candidate_id)
+        if not comparators:
+            raise ControllerError(
+                "commit requires a different-hypothesis competitor or control "
+                "evaluated with the same promotion protocol"
+            )
+        for comparator in comparators:
+            if not comparison_dominates_target(target, comparator):
+                continue
+            if target["best_energy"] > (
+                comparator["best_energy"] + COMMIT_ENERGY_TOLERANCE
+            ):
+                raise ControllerError(
+                    "target promotion is energetically worse than evaluated "
+                    f"comparator {comparator['candidate_id']}"
+                )
+            raise ControllerError(
+                "target promotion is Pareto-dominated by evaluated comparator "
+                f"{comparator['candidate_id']}"
+            )
+        evidence_ids = [
+            promotions[0][0], *(item["evaluation_id"] for item in comparators)
+        ]
+        metadata = {
+            "evidence_ids": evidence_ids,
+            "promotion_evaluation_id": promotions[0][0],
+            "comparison": {
+                "mode": "evaluated_competitor",
+                "energy_tolerance": COMMIT_ENERGY_TOLERANCE,
+                "target": target,
+                "evaluations": comparators,
+            },
+        }
         self._ensure_capacity(cost=0.0, terminal=True)
-        event = self.loop.dispatch(
+        self.loop.dispatch(
             {
                 "type": "commit",
                 "candidate_id": candidate_id,
@@ -676,93 +1273,80 @@ class ResearchController:
                 "cost": 0.0,
             }
         )
-        return self._receipt("commit", [event], {"accepted": True})
+        return self._result(
+            "commit", {"accepted": True, "candidate_id": candidate_id, **metadata}
+        )
 
-    def _close_negative(self, action: Mapping[str, Any]) -> ControllerReceipt:
-        _strict_action(
-            action,
-            required={"type", "reason", "evidence_ids"},
-            optional={"metadata", "cost"},
-        )
-        reason = _nonempty_text(action["reason"], "reason")
-        evidence_ids = _id_list(action["evidence_ids"], "evidence_ids")
-        self._resolve_evidence_ids(evidence_ids)
+    def _close_negative(self, action: Mapping[str, Any]) -> StepResult:
+        _strict_action(action, required={"type", "reason"})
+        reason = _text(action["reason"], "reason")
         state = self.loop.state
-        live_hypotheses = sorted(
-            item.hypothesis_id
-            for item in state.hypotheses.values()
-            if item.status not in {Lifecycle.REVISED, Lifecycle.RETIRED}
-        )
-        live_candidates = sorted(
-            item.candidate_id
-            for item in state.candidates.values()
-            if item.status not in {Lifecycle.REVISED, Lifecycle.RETIRED}
-        )
-        if live_hypotheses or live_candidates:
-            raise ControllerError(
-                "negative close requires every hypothesis and candidate to be terminal; "
-                f"live_hypotheses={live_hypotheses} live_candidates={live_candidates}"
+        ordered_evidence_ids = list(derived_negative_close_evidence(state))
+        try:
+            coverage = validate_negative_close_coverage(
+                state, ordered_evidence_ids
             )
-        substantive = any(
-            evidence_id in state.evaluations
-            or (
-                evidence_id in state.probes
-                and state.probes[evidence_id].result.get("admission")
-                != "non_algebraic_design_hypothesis"
-            )
-            for evidence_id in evidence_ids
-        )
-        if not substantive:
-            raise ControllerError(
-                "negative close requires at least one evaluator result or substantive probe; "
-                "an automatic non-algebraic admission alone is insufficient"
-            )
-        cited_ids = set(evidence_ids)
-        uncovered_hypotheses: list[str] = []
-        for hypothesis in state.hypotheses.values():
-            cited_refutation = any(
-                probe_id in cited_ids
-                and state.probes[probe_id].verdict.value == "refuted"
-                for probe_id in hypothesis.probe_ids
-            )
-            cited_candidate_result = any(
-                evaluation.evaluation_id in cited_ids
-                and state.candidates[evaluation.candidate_id].hypothesis_id
-                == hypothesis.hypothesis_id
-                for evaluation in state.evaluations.values()
-            )
-            if not cited_refutation and not cited_candidate_result:
-                uncovered_hypotheses.append(hypothesis.hypothesis_id)
-        if uncovered_hypotheses:
-            raise ControllerError(
-                "negative close lacks refutation/evaluation evidence for hypotheses: "
-                f"{sorted(uncovered_hypotheses)}"
-            )
+        except TransitionError as exc:
+            raise ControllerError(str(exc)) from exc
         self._ensure_capacity(cost=0.0, terminal=True)
-        event = self.loop.dispatch(
+        self.loop.dispatch(
             {
                 "type": "close_negative",
                 "reason": reason,
-                "evidence_ids": list(evidence_ids),
-                "metadata": _mapping(action.get("metadata", {}), "metadata"),
+                "evidence_ids": ordered_evidence_ids,
+                "metadata": {"coverage": coverage},
                 "cost": 0.0,
             }
         )
-        return self._receipt("close_negative", [event], {"accepted": True})
+        return self._result(
+            "close_negative",
+            {
+                "accepted": True,
+                "evidence_ids": ordered_evidence_ids,
+                "coverage": coverage,
+            },
+        )
 
-    def dispatch_external(self, action: Mapping[str, Any]) -> ControllerReceipt:
+    def _retire(self, action: Mapping[str, Any]) -> StepResult:
+        _strict_action(
+            action, required={"type", "entity", "entity_id", "reason"}
+        )
+        entity = action["entity"]
+        if entity not in {"hypothesis", "candidate"}:
+            raise ControllerError("entity must be hypothesis or candidate")
+        entity_id = _identifier(action["entity_id"], "entity_id")
+        reason = _text(action["reason"], "reason")
+        evidence_ids: list[str] = []
+        if entity == "candidate":
+            candidate = self.loop.state.candidates.get(entity_id)
+            if candidate is not None and candidate.status is Lifecycle.PROMOTED:
+                evidence_ids = self._promoted_disposition_evidence(entity_id)
+        self._ensure_capacity(cost=0.0)
+        self.loop.dispatch(
+            {
+                "type": "retire",
+                "entity": entity,
+                "entity_id": entity_id,
+                "reason": reason,
+                "evidence_ids": evidence_ids,
+                "cost": 0.0,
+            }
+        )
+        return self._result("retire", {"accepted": True})
+
+    def dispatch_external(self, action: Mapping[str, Any]) -> StepResult:
         if not isinstance(action, Mapping):
             raise ControllerError("external action must be an object")
         try:
-            assert_agent_safe(action)
-        except (TypeError, ValueError) as exc:
-            raise ControllerError(str(exc)) from exc
-        try:
             encoded_size = len(
-                json.dumps(action, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                json.dumps(
+                    action, sort_keys=True, separators=(",", ":"), allow_nan=False
+                ).encode("utf-8")
             )
         except (TypeError, ValueError) as exc:
-            raise ControllerError(f"external action must contain JSON data: {exc}") from exc
+            raise ControllerError(
+                f"external action must contain finite JSON data: {exc}"
+            ) from exc
         if encoded_size > MAX_EXTERNAL_ACTION_BYTES:
             raise ControllerError(
                 f"external action exceeds {MAX_EXTERNAL_ACTION_BYTES} byte cap"
@@ -772,397 +1356,40 @@ class ResearchController:
         action_type = action.get("type")
         if not isinstance(action_type, str):
             raise ControllerError("external action requires a string type")
-        if action_type in {"record_probe", "record_evaluation"}:
-            raise ControllerError(f"{action_type} is evaluator-owned and cannot be submitted")
-
-        if action_type == "request_probe":
-            return self._request_probe(action)
-        if action_type == "evaluate_candidate":
-            return self._evaluate_candidate(action)
-        if action_type == "propose_hypothesis":
-            return self._propose_hypothesis(action)
-        if action_type == "submit_candidate":
-            return self._submit_candidate(action)
-        if action_type == "revise":
-            return self._revise(action)
-        if action_type == "commit":
-            return self._commit(action)
-        if action_type == "close_negative":
-            return self._close_negative(action)
-
-        if action_type == "retire":
-            sanitized = dict(action)
-            sanitized["cost"] = 0.0
-            if sanitized.get("entity") == "candidate":
-                candidate_id = sanitized.get("entity_id")
-                candidate = self.loop.state.candidates.get(candidate_id)
-                if candidate is not None and candidate.status is Lifecycle.PROMOTED:
-                    raise ControllerError(
-                        f"promoted candidate {candidate_id} cannot be retired; commit it"
-                    )
-            self._ensure_capacity(cost=float(sanitized["cost"]))
-            event = self.loop.dispatch(sanitized)
-            return self._receipt(action_type, [event], {"accepted": True})
-        raise ControllerError(f"unsupported external action type: {action_type!r}")
-
-    def _request_probe(self, action: Mapping[str, Any]) -> ControllerReceipt:
-        _strict_action(
-            action,
-            required={"type", "hypothesis_id", "probe_id", "probe"},
-        )
-        hypothesis_id = _nonempty_id(action["hypothesis_id"], "hypothesis_id")
-        probe_id = _nonempty_id(action["probe_id"], "probe_id")
-        probe_request = _mapping(action["probe"], "probe")
-        hypothesis = self.loop.state.hypotheses.get(hypothesis_id)
-        if hypothesis is None:
-            raise ControllerError(f"unknown hypothesis: {hypothesis_id}")
-        if hypothesis.status in {Lifecycle.REVISED, Lifecycle.RETIRED}:
-            raise ControllerError(
-                f"cannot probe hypothesis {hypothesis_id} in {hypothesis.status.value}"
-            )
-        if probe_id in self.loop.state.probes:
-            raise ControllerError(f"probe already exists: {probe_id}")
-        if hypothesis.probe_ids:
-            raise ControllerError(
-                "exact_pauli_symmetry has one fixed deterministic commutator probe; "
-                f"existing evidence={list(hypothesis.probe_ids)}"
-            )
-        if hypothesis.claim.get("kind") != EXACT_SYMMETRY_CLAIM:
-            raise ControllerError(
-                "only exact_pauli_symmetry claims accept algebraic probe requests"
-            )
-        if set(probe_request) != {"type", "generator"}:
-            raise ControllerError(
-                "symmetry probe fields must be exactly type and generator"
-            )
-        if probe_request.get("type") != "normalized_commutator":
-            raise ControllerError(
-                "exact_pauli_symmetry requires a normalized_commutator probe"
-            )
-        claimed_generator = hypothesis.claim["generator"]
-        if probe_request.get("generator") != claimed_generator:
-            raise ControllerError("probe generator must match the hypothesis generator")
-        # Preflight the bounded sparse work before executing the commutator,
-        # and reserve exactly the complexity-derived amount recorded below.
-        probe_cost = algebraic_probe_cost_units(
-            hamiltonian_from_public(self.problem), probe_request
-        )
-        self._ensure_capacity(cost=probe_cost)
-
-        receipt = run_public_probe(self.problem, probe_request)
-        if not math.isclose(
-            receipt.cost_units, probe_cost, rel_tol=0.0, abs_tol=1e-12
-        ):
-            raise ControllerError("probe preflight and receipt costs disagree")
-        passed = _probe_passed(receipt)
-        if passed:
-            verdict = "supported"
-        else:
-            verdict = "refuted"
-
-        result = receipt.to_dict()
-        result["controller_passed"] = passed
-        event = self.loop.dispatch(
-            {
-                "type": "record_probe",
-                "hypothesis_id": hypothesis_id,
-                "probe_id": probe_id,
-                "verdict": verdict,
-                "result": result,
-                "cost": receipt.cost_units,
-            }
-        )
-        return self._receipt("request_probe", [event], result)
-
-    def _audit_candidate(self, candidate_id: str) -> tuple[bool, dict[str, Any]]:
-        candidate = self.loop.state.candidates[candidate_id]
-        try:
-            compiled = compile_ansatz(candidate.spec)
-            parsed_spec = AnsatzSpec.from_dict(candidate.spec)
-            if parsed_spec.num_qubits != self.problem.num_qubits:
-                raise ControllerError(
-                    "candidate num_qubits must match the public problem"
+        pending_comparisons = self._pending_promotion_comparisons()
+        if pending_comparisons:
+            candidate = self.loop.state.candidates.get(action.get("candidate_id"))
+            if not (
+                action_type == "evaluate_candidate"
+                and candidate is not None
+                and candidate.status is Lifecycle.SMOKE
+                and any(
+                    candidate.hypothesis_id
+                    != self.loop.state.candidates[target_id].hypothesis_id
+                    for target_id in pending_comparisons
                 )
-            if compiled.audit.operations > MAX_CANDIDATE_OPERATIONS:
-                raise ControllerError(
-                    f"candidate exceeds operation cap {MAX_CANDIDATE_OPERATIONS}"
-                )
-            if compiled.audit.unique_trainable_params > MAX_CANDIDATE_PARAMETERS:
-                raise ControllerError(
-                    f"candidate exceeds parameter cap {MAX_CANDIDATE_PARAMETERS}"
-                )
-            if compiled.audit.spec_nodes > MAX_CANDIDATE_SPEC_NODES:
-                raise ControllerError(
-                    f"candidate exceeds spec-node cap {MAX_CANDIDATE_SPEC_NODES}"
-                )
-            if compiled.audit.operations <= 0:
-                raise ControllerError("promotable candidate requires at least one operation")
-            if compiled.audit.unique_trainable_params <= 0:
-                raise ControllerError(
-                    "promotable candidate requires at least one trainable parameter"
-                )
-            excessive_fanout = {
-                name: occurrences
-                for name, occurrences in compiled.audit.parameter_occurrences.items()
-                if occurrences > MAX_PARAMETER_FANOUT
-            }
-            if excessive_fanout:
-                raise ControllerError(
-                    f"parameter fan-out exceeds {MAX_PARAMETER_FANOUT}: "
-                    f"{excessive_fanout}"
-                )
-
-            occupation = self.problem.reference.occupation
-            expected_reference_qubits = tuple(
-                index for index, bit in enumerate(occupation or ()) if bit
-            )
-            if expected_reference_qubits:
-                if (
-                    parsed_spec.reference is None
-                    or parsed_spec.reference.macro != "X"
-                    or parsed_spec.reference.qubits != expected_reference_qubits
-                ):
-                    raise ControllerError(
-                        "candidate reference must exactly match the evaluator-owned "
-                        "public computational-basis reference"
-                    )
-            elif parsed_spec.reference is not None:
-                raise ControllerError(
-                    "candidate cannot introduce a reference preparation when the "
-                    "public problem declares none"
-                )
-
-            hamiltonian_labels = {term.pauli for term in self.problem.pauli_terms}
-            for operation in parsed_spec.operations:
-                if operation.macro != "PauliRotation" or len(operation.qubits) <= 2:
-                    continue
-                local_pauli = operation.options["pauli"]
-                full_label = ["I"] * self.problem.num_qubits
-                for qubit, letter in zip(operation.qubits, local_pauli, strict=True):
-                    full_label[self.problem.num_qubits - qubit - 1] = letter
-                if "".join(full_label) not in hamiltonian_labels:
-                    raise ControllerError(
-                        "PauliRotation above locality 2 must be a declared Hamiltonian term"
-                    )
-
-            allowed_scales = {-2.0, -1.0, -0.5, 0.5, 1.0, 2.0}
-            unapproved_literals = [
-                literal.to_dict()
-                for literal in compiled.audit.fixed_literals
-                if literal.role != "scale"
-                or not any(
-                    math.isclose(literal.value, allowed, rel_tol=0.0, abs_tol=1e-12)
-                    for allowed in allowed_scales
-                )
-            ]
-            if unapproved_literals:
-                raise ControllerError(
-                    "candidate contains unapproved fixed numeric literals: "
-                    f"{unapproved_literals}"
-                )
-
-            hypothesis = self.loop.state.hypotheses[candidate.hypothesis_id]
-            claim_kind = hypothesis.claim.get("kind")
-            conservation_macros = sorted(
-                {
-                    operation.macro
-                    for operation in parsed_spec.operations
-                    if operation.macro in {"XYExchange", "IsotropicExchange"}
-                }
-            )
-            if conservation_macros and (
-                claim_kind != EXACT_SYMMETRY_CLAIM
-                or hypothesis.status is not Lifecycle.SUPPORTED
             ):
                 raise ControllerError(
-                    "XYExchange and IsotropicExchange require a controller-SUPPORTED "
-                    "exact_pauli_symmetry parent; macro registry availability or a "
-                    f"family name is not evidence (used={conservation_macros})"
+                    "a promoted candidate is waiting for its reserved fair comparison; "
+                    "next evaluate a different-hypothesis SMOKE candidate at promotion: "
+                    f"{pending_comparisons}"
                 )
-            required_enforcement = {
-                EXACT_SYMMETRY_CLAIM: "preserve",
-                STRUCTURE_CLAIM: "unconstrained",
-                NULL_CONTROL_CLAIM: "diagnostic",
-            }.get(str(claim_kind))
-            enforcement = candidate.metadata.get("enforcement")
-            if enforcement != required_enforcement:
-                raise ControllerError(
-                    f"{claim_kind} candidate requires "
-                    f"metadata.enforcement={required_enforcement!r}"
-                )
-            symmetry_audit: dict[str, Any] | None = None
-            if claim_kind == EXACT_SYMMETRY_CLAIM:
-                generator_recipe = hypothesis.claim.get("generator")
-                if not isinstance(generator_recipe, Mapping):
-                    raise ControllerError(
-                        "symmetry-preserving candidate requires a machine-readable hypothesis generator"
-                    )
-                charge = generator_from_recipe(self.problem.num_qubits, generator_recipe)
-                residuals = operation_symmetry_residuals(
-                    self.problem.num_qubits,
-                    parsed_spec.operations,
-                    charge,
-                )
-                max_residual = max(residuals, default=0.0)
-                if max_residual > EXACT_SYMMETRY_TOLERANCE:
-                    raise ControllerError(
-                        "candidate operation breaks its claimed exact symmetry: "
-                        f"residual={max_residual:.3e}"
-                    )
-                zero_circuit = compiled.circuit.assign_parameters(
-                    {parameter: 0.0 for parameter in compiled.parameters.values()},
-                    inplace=False,
-                )
-                reference_mean, reference_variance = reference_moments(
-                    zero_circuit,
-                    charge,
-                )
-                if reference_variance > EXACT_SYMMETRY_TOLERANCE:
-                    raise ControllerError(
-                        "candidate reference is not in a definite sector of the claimed symmetry"
-                    )
-                symmetry_audit = {
-                    "max_operation_residual": max_residual,
-                    "reference_mean": reference_mean,
-                    "reference_variance": reference_variance,
-                }
-            metrics = {
-                "audit": compiled.audit.to_dict(),
-                "valid": True,
-            }
-            if symmetry_audit is not None:
-                metrics["symmetry_audit"] = symmetry_audit
-            return True, metrics
-        except Exception as exc:
-            return False, {
-                "valid": False,
-                "violations": [f"{type(exc).__name__}: {exc}"],
-            }
-
-    def _candidate_baseline_energy(self, spec: Mapping[str, Any]) -> float:
-        compiled = compile_ansatz(spec)
-        zero_mapping = {parameter: 0.0 for parameter in compiled.parameters.values()}
-        zero_circuit = compiled.circuit.assign_parameters(zero_mapping, inplace=False)
-        return energy_from_circuit(zero_circuit, hamiltonian_from_public(self.problem))
-
-    def _evaluate_candidate(self, action: Mapping[str, Any]) -> ControllerReceipt:
-        _strict_action(
-            action,
-            required={"type", "candidate_id", "evaluation_id", "stage"},
-        )
-        candidate_id = _nonempty_id(action["candidate_id"], "candidate_id")
-        evaluation_id = _nonempty_id(action["evaluation_id"], "evaluation_id")
-        try:
-            stage = EvaluationStage(action["stage"])
-        except (TypeError, ValueError) as exc:
-            raise ControllerError("stage must be audit, smoke, or promotion") from exc
-        candidate = self.loop.state.candidates.get(candidate_id)
-        if candidate is None:
-            raise ControllerError(f"unknown candidate: {candidate_id}")
-        if evaluation_id in self.loop.state.evaluations:
-            raise ControllerError(f"evaluation already exists: {evaluation_id}")
-        prior_stage_ids = [
-            evaluation.evaluation_id
-            for evaluation in self.loop.state.evaluations.values()
-            if evaluation.candidate_id == candidate_id and evaluation.stage is stage
-        ]
-        if prior_stage_ids:
-            raise ControllerError(
-                f"candidate {candidate_id} already has fixed {stage.value} evidence: "
-                f"{prior_stage_ids}"
-            )
-        allowed_statuses = {
-            EvaluationStage.AUDIT: {Lifecycle.CANDIDATE, Lifecycle.AUDITED},
-            EvaluationStage.SMOKE: {Lifecycle.AUDITED, Lifecycle.SMOKE},
-            EvaluationStage.PROMOTION: {Lifecycle.SMOKE, Lifecycle.PROMOTED},
+        if action_type in {"record_probe", "record_evaluation"}:
+            raise ControllerError(f"{action_type} is evaluator-owned")
+        handlers = {
+            "propose_hypothesis": self._propose_hypothesis,
+            "request_probe": self._request_probe,
+            "submit_candidate": self._submit_candidate,
+            "evaluate_candidate": self._evaluate_candidate,
+            "revise": self._revise,
+            "retire": self._retire,
+            "commit": self._commit,
+            "close_negative": self._close_negative,
         }
-        if candidate.status not in allowed_statuses[stage]:
-            raise ControllerError(
-                f"cannot run {stage.value} for {candidate_id} in {candidate.status.value}"
-            )
+        handler = handlers.get(action_type)
+        if handler is None:
+            raise ControllerError(f"unsupported external action type: {action_type!r}")
+        return handler(action)
 
-        if stage is EvaluationStage.AUDIT:
-            cost = 0.25
-            self._ensure_capacity(cost=cost)
-            passed, metrics = self._audit_candidate(candidate_id)
-        else:
-            if stage is EvaluationStage.SMOKE:
-                protocol = EvaluationProtocol(
-                    optimizer="cobyla", max_evals=32, restarts=1, seed=7
-                )
-                cost = 2.0
-            else:
-                protocol = EvaluationProtocol(
-                    optimizer="cobyla", max_evals=96, restarts=3, seed=997
-                )
-                cost = 6.0
-            self._ensure_capacity(cost=cost)
-            private_result = evaluate_public_problem(
-                self.problem,
-                candidate.spec,
-                protocol=protocol,
-            )
-            metrics = private_result.receipt.to_dict()
-            resource_policy = _resource_eligibility(metrics.get("metrics", {}))
-            metrics["resource_policy"] = resource_policy
-            baseline_energy: float | None = None
-            try:
-                baseline_energy = self._candidate_baseline_energy(candidate.spec)
-            except Exception:
-                pass
-            metrics["baseline_energy"] = baseline_energy
-            if baseline_energy is not None and private_result.receipt.best_energy is not None:
-                metrics["energy_improvement"] = (
-                    baseline_energy - private_result.receipt.best_energy
-                )
-            improvement_threshold = (
-                None
-                if baseline_energy is None
-                else max(
-                    MIN_SMOKE_ENERGY_IMPROVEMENT,
-                    MIN_SMOKE_ENERGY_IMPROVEMENT * abs(baseline_energy),
-                )
-            )
-            metrics["required_energy_improvement"] = improvement_threshold
-            energy_improvement = metrics.get("energy_improvement")
-            passed = bool(
-                private_result.receipt.valid
-                and resource_policy["eligible"]
-                and improvement_threshold is not None
-                and energy_improvement is not None
-                and float(energy_improvement) >= improvement_threshold
-            )
-            hypothesis = self.loop.state.hypotheses[candidate.hypothesis_id]
-            if stage is EvaluationStage.PROMOTION and hypothesis.claim.get("kind") == NULL_CONTROL_CLAIM:
-                passed = False
-                metrics["promotion_blocked_reason"] = (
-                    "null_control candidates are diagnostic and cannot be promoted"
-                )
-            if passed and stage is EvaluationStage.PROMOTION:
-                smoke_energies = [
-                    record.metrics.get("best_energy")
-                    for record in self.loop.state.evaluations.values()
-                    if record.candidate_id == candidate_id
-                    and record.stage is EvaluationStage.SMOKE
-                    and record.passed
-                ]
-                smoke_energies = [float(value) for value in smoke_energies if value is not None]
-                best_energy = private_result.receipt.best_energy
-                passed = bool(
-                    smoke_energies
-                    and best_energy is not None
-                    and best_energy <= min(smoke_energies) + 5e-4
-                )
 
-        event = self.loop.dispatch(
-            {
-                "type": "record_evaluation",
-                "candidate_id": candidate_id,
-                "evaluation_id": evaluation_id,
-                "stage": stage.value,
-                "passed": bool(passed),
-                "metrics": metrics,
-                "cost": cost,
-            }
-        )
-        return self._receipt("evaluate_candidate", [event], metrics)
+__all__ = ["ControllerError", "ResearchController", "StepResult"]

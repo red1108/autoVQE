@@ -16,9 +16,9 @@ If this changes ansatz logic or fixtures, include:
 
 - problem file:
 - Hamiltonian facts used:
-- best energy:
-- reference energy:
-- relative error:
+- evaluator energy:
+- independent post-run comparison, if available:
+- comparison metric:
 - ansatz family:
 - parameters:
 - two-qubit gates:

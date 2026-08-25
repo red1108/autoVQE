@@ -1,63 +1,52 @@
+"""Research state, transitions, and replay for AutoVQE.
+
+The public controller validates agent requests and performs measurements. This
+module records only the controller's normalized events and reconstructs the
+scientific state. Plain JSON events avoid a second public action API while
+preserving deterministic replay and failed branches.
+"""
+
 from __future__ import annotations
 
 import copy
-import json
 import math
 import re
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Union
+from typing import Any, Iterable, Mapping
 
 from .history import HistoryIntegrityError, JsonlRunHistory, RunEvent
-
-
-_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
-_TERMINAL = {"REVISED", "RETIRED"}
 
 
 class ResearchError(RuntimeError):
     """Base class for research-loop failures."""
 
 
-class ActionParseError(ResearchError):
-    """Raised when an action does not match the typed action schema."""
+class EventFormatError(ResearchError):
+    """Raised when a controller event is not valid JSON event data."""
 
 
 class TransitionError(ResearchError):
-    """Raised when an action is invalid for the current lifecycle state."""
+    """Raised when an event violates the research lifecycle."""
 
 
 class BudgetExceeded(ResearchError):
-    """Raised when an action would overspend the run budget."""
+    """Raised when an event would overspend the run budget."""
 
 
 class Lifecycle(str, Enum):
     PROPOSED = "PROPOSED"
-    PROBED = "PROBED"
+    READY = "READY"
     SUPPORTED = "SUPPORTED"
+    REFUTED = "REFUTED"
+    INCONCLUSIVE = "INCONCLUSIVE"
     CANDIDATE = "CANDIDATE"
     AUDITED = "AUDITED"
     SMOKE = "SMOKE"
     PROMOTED = "PROMOTED"
     REVISED = "REVISED"
     RETIRED = "RETIRED"
-
-
-class ActionType(str, Enum):
-    PROPOSE_HYPOTHESIS = "propose_hypothesis"
-    RECORD_PROBE = "record_probe"
-    SUBMIT_CANDIDATE = "submit_candidate"
-    RECORD_EVALUATION = "record_evaluation"
-    REVISE = "revise"
-    RETIRE = "retire"
-    COMMIT = "commit"
-    CLOSE_NEGATIVE = "close_negative"
-
-
-class EntityKind(str, Enum):
-    HYPOTHESIS = "hypothesis"
-    CANDIDATE = "candidate"
 
 
 class ProbeVerdict(str, Enum):
@@ -72,435 +61,229 @@ class EvaluationStage(str, Enum):
     PROMOTION = "promotion"
 
 
-def _validated_id(value: Any, field_name: str) -> str:
-    if not isinstance(value, str) or not _ID_RE.fullmatch(value):
-        raise ActionParseError(
-            f"{field_name} must match {_ID_RE.pattern!r}; got {value!r}"
-        )
-    return value
-
-
-def _validated_text(value: Any, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ActionParseError(f"{field_name} must be a non-empty string")
-    return value.strip()
-
-
-def _validated_cost(value: Any) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ActionParseError("cost must be a number")
-    cost = float(value)
-    if not math.isfinite(cost) or cost < 0:
-        raise ActionParseError("cost must be finite and non-negative")
-    return cost
-
-
-def _validated_mapping(value: Any, field_name: str, *, nonempty: bool = False) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ActionParseError(f"{field_name} must be an object")
-    try:
-        detached = json.loads(
-            json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True)
-        )
-    except (TypeError, ValueError) as exc:
-        raise ActionParseError(f"{field_name} must contain JSON data: {exc}") from exc
-    if nonempty and not detached:
-        raise ActionParseError(f"{field_name} must not be empty")
-    return detached
-
-
-def _validated_ids(value: Any, field_name: str, *, nonempty: bool = False) -> tuple[str, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ActionParseError(f"{field_name} must be a list of IDs")
-    validated = tuple(_validated_id(item, field_name) for item in value)
-    if nonempty and not validated:
-        raise ActionParseError(f"{field_name} must not be empty")
-    if len(set(validated)) != len(validated):
-        raise ActionParseError(f"{field_name} must not contain duplicate IDs")
-    return validated
-
-
-def _coerce_enum(enum_type: type[Enum], value: Any, field_name: str) -> Enum:
-    try:
-        return enum_type(value)
-    except (TypeError, ValueError) as exc:
-        allowed = [item.value for item in enum_type]
-        raise ActionParseError(f"{field_name} must be one of {allowed}; got {value!r}") from exc
-
-
-@dataclass(frozen=True)
-class ProposeHypothesisAction:
-    hypothesis_id: str
-    claim: Mapping[str, Any]
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-    cost: float = 0.0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "hypothesis_id", _validated_id(self.hypothesis_id, "hypothesis_id"))
-        object.__setattr__(self, "claim", _validated_mapping(self.claim, "claim", nonempty=True))
-        object.__setattr__(self, "metadata", _validated_mapping(self.metadata, "metadata"))
-        object.__setattr__(self, "cost", _validated_cost(self.cost))
-
-
-@dataclass(frozen=True)
-class RecordProbeAction:
-    hypothesis_id: str
-    probe_id: str
-    verdict: ProbeVerdict | str
-    result: Mapping[str, Any]
-    cost: float = 0.0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "hypothesis_id", _validated_id(self.hypothesis_id, "hypothesis_id"))
-        object.__setattr__(self, "probe_id", _validated_id(self.probe_id, "probe_id"))
-        object.__setattr__(self, "verdict", _coerce_enum(ProbeVerdict, self.verdict, "verdict"))
-        object.__setattr__(self, "result", _validated_mapping(self.result, "result"))
-        object.__setattr__(self, "cost", _validated_cost(self.cost))
-
-
-@dataclass(frozen=True)
-class SubmitCandidateAction:
-    candidate_id: str
-    hypothesis_id: str
-    spec: Mapping[str, Any]
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-    cost: float = 0.0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "candidate_id", _validated_id(self.candidate_id, "candidate_id"))
-        object.__setattr__(self, "hypothesis_id", _validated_id(self.hypothesis_id, "hypothesis_id"))
-        object.__setattr__(self, "spec", _validated_mapping(self.spec, "spec", nonempty=True))
-        object.__setattr__(self, "metadata", _validated_mapping(self.metadata, "metadata"))
-        object.__setattr__(self, "cost", _validated_cost(self.cost))
-
-
-@dataclass(frozen=True)
-class RecordEvaluationAction:
-    candidate_id: str
-    evaluation_id: str
-    stage: EvaluationStage | str
-    passed: bool
-    metrics: Mapping[str, Any]
-    cost: float = 0.0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "candidate_id", _validated_id(self.candidate_id, "candidate_id"))
-        object.__setattr__(self, "evaluation_id", _validated_id(self.evaluation_id, "evaluation_id"))
-        object.__setattr__(self, "stage", _coerce_enum(EvaluationStage, self.stage, "stage"))
-        if not isinstance(self.passed, bool):
-            raise ActionParseError("passed must be a boolean")
-        object.__setattr__(self, "metrics", _validated_mapping(self.metrics, "metrics"))
-        object.__setattr__(self, "cost", _validated_cost(self.cost))
-
-
-@dataclass(frozen=True)
-class ReviseAction:
-    entity: EntityKind | str
-    source_id: str
-    new_id: str
-    replacement: Mapping[str, Any]
-    reason: str
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-    cost: float = 0.0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "entity", _coerce_enum(EntityKind, self.entity, "entity"))
-        object.__setattr__(self, "source_id", _validated_id(self.source_id, "source_id"))
-        object.__setattr__(self, "new_id", _validated_id(self.new_id, "new_id"))
-        if self.source_id == self.new_id:
-            raise ActionParseError("new_id must differ from source_id")
-        object.__setattr__(
-            self,
-            "replacement",
-            _validated_mapping(self.replacement, "replacement", nonempty=True),
-        )
-        object.__setattr__(self, "reason", _validated_text(self.reason, "reason"))
-        object.__setattr__(self, "metadata", _validated_mapping(self.metadata, "metadata"))
-        object.__setattr__(self, "cost", _validated_cost(self.cost))
-
-
-@dataclass(frozen=True)
-class RetireAction:
-    entity: EntityKind | str
-    entity_id: str
-    reason: str
-    cost: float = 0.0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "entity", _coerce_enum(EntityKind, self.entity, "entity"))
-        object.__setattr__(self, "entity_id", _validated_id(self.entity_id, "entity_id"))
-        object.__setattr__(self, "reason", _validated_text(self.reason, "reason"))
-        object.__setattr__(self, "cost", _validated_cost(self.cost))
-
-
-@dataclass(frozen=True)
-class CommitAction:
-    candidate_id: str
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-    cost: float = 0.0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "candidate_id", _validated_id(self.candidate_id, "candidate_id"))
-        object.__setattr__(self, "metadata", _validated_mapping(self.metadata, "metadata"))
-        object.__setattr__(self, "cost", _validated_cost(self.cost))
-
-
-@dataclass(frozen=True)
-class CloseNegativeAction:
-    reason: str
-    evidence_ids: tuple[str, ...]
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-    cost: float = 0.0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "reason", _validated_text(self.reason, "reason"))
-        object.__setattr__(
-            self,
-            "evidence_ids",
-            _validated_ids(self.evidence_ids, "evidence_ids", nonempty=True),
-        )
-        object.__setattr__(self, "metadata", _validated_mapping(self.metadata, "metadata"))
-        object.__setattr__(self, "cost", _validated_cost(self.cost))
-
-
-ResearchAction = Union[
-    ProposeHypothesisAction,
-    RecordProbeAction,
-    SubmitCandidateAction,
-    RecordEvaluationAction,
-    ReviseAction,
-    RetireAction,
-    CommitAction,
-    CloseNegativeAction,
-]
-
-_ACTION_CLASSES = (
-    ProposeHypothesisAction,
-    RecordProbeAction,
-    SubmitCandidateAction,
-    RecordEvaluationAction,
-    ReviseAction,
-    RetireAction,
-    CommitAction,
-    CloseNegativeAction,
+COMMIT_ENERGY_TOLERANCE = 5e-4
+MIN_NEGATIVE_OBJECTIVE_ACTIVITY_FRACTION = 1e-6
+MIN_NEGATIVE_STRUCTURE_LINEAGES = 2
+_COMPARISON_RESOURCE_NAMES = (
+    "conservative_twoq_count",
+    "conservative_total_gate_count",
+    "conservative_depth",
 )
 
 
-def _strict_fields(
-    raw: Mapping[str, Any],
-    *,
-    required: set[str],
-    optional: set[str] | None = None,
-) -> None:
-    optional = optional or set()
-    fields = set(raw)
-    missing = required - fields
-    extra = fields - required - optional
-    if missing or extra:
-        raise ActionParseError(
-            f"invalid action fields: missing={sorted(missing)} extra={sorted(extra)}"
-        )
+_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_TERMINAL = frozenset({Lifecycle.REVISED, Lifecycle.RETIRED})
+_EVENT_FIELDS: dict[str, tuple[set[str], set[str]]] = {
+    "propose_hypothesis": (
+        {"type", "hypothesis_id", "claim"},
+        {"metadata", "cost"},
+    ),
+    "record_probe": (
+        {"type", "hypothesis_id", "probe_id", "verdict", "result"},
+        {"cost"},
+    ),
+    "submit_candidate": (
+        {"type", "candidate_id", "hypothesis_id", "spec"},
+        {"metadata", "parent_id", "symmetry_evidence_ids", "cost"},
+    ),
+    "record_evaluation": (
+        {"type", "candidate_id", "evaluation_id", "stage", "passed", "metrics"},
+        {"cost"},
+    ),
+    "revise": (
+        {"type", "entity", "source_id", "new_id", "replacement", "reason"},
+        {"metadata", "symmetry_evidence_ids", "evidence_ids", "cost"},
+    ),
+    "retire": (
+        {"type", "entity", "entity_id", "reason"},
+        {"evidence_ids", "cost"},
+    ),
+    "commit": (
+        {"type", "candidate_id"},
+        {"metadata", "cost"},
+    ),
+    "close_negative": (
+        {"type", "reason", "evidence_ids"},
+        {"metadata", "cost"},
+    ),
+}
 
 
-def parse_action(raw: ResearchAction | Mapping[str, Any]) -> ResearchAction:
-    """Parse a strict mapping into one of the closed set of action dataclasses."""
+def _identifier(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not _ID_RE.fullmatch(value):
+        raise EventFormatError(f"{field_name} must match {_ID_RE.pattern!r}")
+    return value
 
-    if isinstance(raw, _ACTION_CLASSES):
-        return raw
+
+def _text(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise EventFormatError(f"{field_name} must be a non-empty string")
+    return value.strip()
+
+
+def _cost(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise EventFormatError("cost must be a number")
+    result = float(value)
+    if not math.isfinite(result) or result < 0:
+        raise EventFormatError("cost must be finite and non-negative")
+    return result
+
+
+def _json(value: Any, field_name: str) -> Any:
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise EventFormatError(f"{field_name} contains a non-finite number")
+        return value
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise EventFormatError(f"{field_name} contains a non-string key")
+            result[key] = _json(item, f"{field_name}.{key}")
+        return result
+    if isinstance(value, (list, tuple)):
+        return [_json(item, f"{field_name}[{index}]") for index, item in enumerate(value)]
+    raise EventFormatError(
+        f"{field_name} contains unsupported value {type(value).__name__}"
+    )
+
+
+def _mapping(value: Any, field_name: str, *, nonempty: bool = False) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise EventFormatError(f"{field_name} must be an object")
+    result = _json(value, field_name)
+    if nonempty and not result:
+        raise EventFormatError(f"{field_name} must not be empty")
+    return result
+
+
+def _identifiers(value: Any, field_name: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise EventFormatError(f"{field_name} must be a non-empty list")
+    result = [_identifier(item, field_name) for item in value]
+    if len(set(result)) != len(result):
+        raise EventFormatError(f"{field_name} must not contain duplicates")
+    return result
+
+
+def _optional_identifiers(value: Any, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise EventFormatError(f"{field_name} must be a list")
+    result = [_identifier(item, field_name) for item in value]
+    if len(set(result)) != len(result):
+        raise EventFormatError(f"{field_name} must not contain duplicates")
+    return result
+
+
+def normalize_event(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and detach one controller-owned event."""
+
     if not isinstance(raw, Mapping):
-        raise ActionParseError("action must be a mapping or typed action")
-    action_type = raw.get("type")
-    try:
-        kind = ActionType(action_type)
-    except (TypeError, ValueError) as exc:
-        raise ActionParseError(f"unknown action type: {action_type!r}") from exc
+        raise EventFormatError("event must be an object")
+    event_type = raw.get("type")
+    if not isinstance(event_type, str) or event_type not in _EVENT_FIELDS:
+        raise EventFormatError(f"unsupported event type: {event_type!r}")
+    required, optional = _EVENT_FIELDS[event_type]
+    missing = required - set(raw)
+    extra = set(raw) - required - optional
+    if missing or extra:
+        raise EventFormatError(
+            f"invalid {event_type} fields: missing={sorted(missing)} extra={sorted(extra)}"
+        )
 
-    common_optional = {"cost"}
-    if kind is ActionType.PROPOSE_HYPOTHESIS:
-        _strict_fields(
-            raw,
-            required={"type", "hypothesis_id", "claim"},
-            optional=common_optional | {"metadata"},
+    event = {"type": event_type, "cost": _cost(raw.get("cost", 0.0))}
+    if event_type == "propose_hypothesis":
+        event.update(
+            hypothesis_id=_identifier(raw["hypothesis_id"], "hypothesis_id"),
+            claim=_mapping(raw["claim"], "claim", nonempty=True),
+            metadata=_mapping(raw.get("metadata", {}), "metadata"),
         )
-        return ProposeHypothesisAction(
-            hypothesis_id=raw["hypothesis_id"],
-            claim=raw["claim"],
-            metadata=raw.get("metadata", {}),
-            cost=raw.get("cost", 0.0),
+    elif event_type == "record_probe":
+        try:
+            verdict = ProbeVerdict(raw["verdict"])
+        except (TypeError, ValueError) as exc:
+            raise EventFormatError(f"invalid probe verdict: {raw['verdict']!r}") from exc
+        event.update(
+            hypothesis_id=_identifier(raw["hypothesis_id"], "hypothesis_id"),
+            probe_id=_identifier(raw["probe_id"], "probe_id"),
+            verdict=verdict.value,
+            result=_mapping(raw["result"], "result"),
         )
-    if kind is ActionType.RECORD_PROBE:
-        _strict_fields(
-            raw,
-            required={"type", "hypothesis_id", "probe_id", "verdict", "result"},
-            optional=common_optional,
+    elif event_type == "submit_candidate":
+        parent_id = raw.get("parent_id")
+        event.update(
+            candidate_id=_identifier(raw["candidate_id"], "candidate_id"),
+            hypothesis_id=_identifier(raw["hypothesis_id"], "hypothesis_id"),
+            spec=_mapping(raw["spec"], "spec", nonempty=True),
+            metadata=_mapping(raw.get("metadata", {}), "metadata"),
+            parent_id=None if parent_id is None else _identifier(parent_id, "parent_id"),
+            symmetry_evidence_ids=_optional_identifiers(
+                raw.get("symmetry_evidence_ids"), "symmetry_evidence_ids"
+            ),
         )
-        return RecordProbeAction(
-            hypothesis_id=raw["hypothesis_id"],
-            probe_id=raw["probe_id"],
-            verdict=raw["verdict"],
-            result=raw["result"],
-            cost=raw.get("cost", 0.0),
-        )
-    if kind is ActionType.SUBMIT_CANDIDATE:
-        _strict_fields(
-            raw,
-            required={"type", "candidate_id", "hypothesis_id", "spec"},
-            optional=common_optional | {"metadata"},
-        )
-        return SubmitCandidateAction(
-            candidate_id=raw["candidate_id"],
-            hypothesis_id=raw["hypothesis_id"],
-            spec=raw["spec"],
-            metadata=raw.get("metadata", {}),
-            cost=raw.get("cost", 0.0),
-        )
-    if kind is ActionType.RECORD_EVALUATION:
-        _strict_fields(
-            raw,
-            required={"type", "candidate_id", "evaluation_id", "stage", "passed", "metrics"},
-            optional=common_optional,
-        )
-        return RecordEvaluationAction(
-            candidate_id=raw["candidate_id"],
-            evaluation_id=raw["evaluation_id"],
-            stage=raw["stage"],
+    elif event_type == "record_evaluation":
+        try:
+            stage = EvaluationStage(raw["stage"])
+        except (TypeError, ValueError) as exc:
+            raise EventFormatError(f"invalid evaluation stage: {raw['stage']!r}") from exc
+        if not isinstance(raw["passed"], bool):
+            raise EventFormatError("passed must be a boolean")
+        event.update(
+            candidate_id=_identifier(raw["candidate_id"], "candidate_id"),
+            evaluation_id=_identifier(raw["evaluation_id"], "evaluation_id"),
+            stage=stage.value,
             passed=raw["passed"],
-            metrics=raw["metrics"],
-            cost=raw.get("cost", 0.0),
+            metrics=_mapping(raw["metrics"], "metrics"),
         )
-    if kind is ActionType.REVISE:
-        _strict_fields(
-            raw,
-            required={"type", "entity", "source_id", "new_id", "replacement", "reason"},
-            optional=common_optional | {"metadata"},
+    elif event_type == "revise":
+        entity = raw["entity"]
+        if entity not in {"hypothesis", "candidate"}:
+            raise EventFormatError("entity must be hypothesis or candidate")
+        event.update(
+            entity=entity,
+            source_id=_identifier(raw["source_id"], "source_id"),
+            new_id=_identifier(raw["new_id"], "new_id"),
+            replacement=_mapping(raw["replacement"], "replacement", nonempty=True),
+            reason=_text(raw["reason"], "reason"),
+            metadata=_mapping(raw.get("metadata", {}), "metadata"),
+            symmetry_evidence_ids=_optional_identifiers(
+                raw.get("symmetry_evidence_ids"), "symmetry_evidence_ids"
+            ),
+            evidence_ids=_optional_identifiers(
+                raw.get("evidence_ids"), "evidence_ids"
+            ),
         )
-        return ReviseAction(
-            entity=raw["entity"],
-            source_id=raw["source_id"],
-            new_id=raw["new_id"],
-            replacement=raw["replacement"],
-            reason=raw["reason"],
-            metadata=raw.get("metadata", {}),
-            cost=raw.get("cost", 0.0),
+    elif event_type == "retire":
+        entity = raw["entity"]
+        if entity not in {"hypothesis", "candidate"}:
+            raise EventFormatError("entity must be hypothesis or candidate")
+        event.update(
+            entity=entity,
+            entity_id=_identifier(raw["entity_id"], "entity_id"),
+            reason=_text(raw["reason"], "reason"),
+            evidence_ids=_optional_identifiers(
+                raw.get("evidence_ids"), "evidence_ids"
+            ),
         )
-    if kind is ActionType.RETIRE:
-        _strict_fields(
-            raw,
-            required={"type", "entity", "entity_id", "reason"},
-            optional=common_optional,
+    elif event_type == "commit":
+        event.update(
+            candidate_id=_identifier(raw["candidate_id"], "candidate_id"),
+            metadata=_mapping(raw.get("metadata", {}), "metadata"),
         )
-        return RetireAction(
-            entity=raw["entity"],
-            entity_id=raw["entity_id"],
-            reason=raw["reason"],
-            cost=raw.get("cost", 0.0),
+    elif event_type == "close_negative":
+        event.update(
+            reason=_text(raw["reason"], "reason"),
+            evidence_ids=_identifiers(raw["evidence_ids"], "evidence_ids"),
+            metadata=_mapping(raw.get("metadata", {}), "metadata"),
         )
-    if kind is ActionType.COMMIT:
-        _strict_fields(
-            raw,
-            required={"type", "candidate_id"},
-            optional=common_optional | {"metadata"},
-        )
-        return CommitAction(
-            candidate_id=raw["candidate_id"],
-            metadata=raw.get("metadata", {}),
-            cost=raw.get("cost", 0.0),
-        )
-    if kind is ActionType.CLOSE_NEGATIVE:
-        _strict_fields(
-            raw,
-            required={"type", "reason", "evidence_ids"},
-            optional=common_optional | {"metadata"},
-        )
-        return CloseNegativeAction(
-            reason=raw["reason"],
-            evidence_ids=raw["evidence_ids"],
-            metadata=raw.get("metadata", {}),
-            cost=raw.get("cost", 0.0),
-        )
-    raise AssertionError(f"unhandled action type {kind}")
-
-
-def _action_type(action: ResearchAction) -> ActionType:
-    if isinstance(action, ProposeHypothesisAction):
-        return ActionType.PROPOSE_HYPOTHESIS
-    if isinstance(action, RecordProbeAction):
-        return ActionType.RECORD_PROBE
-    if isinstance(action, SubmitCandidateAction):
-        return ActionType.SUBMIT_CANDIDATE
-    if isinstance(action, RecordEvaluationAction):
-        return ActionType.RECORD_EVALUATION
-    if isinstance(action, ReviseAction):
-        return ActionType.REVISE
-    if isinstance(action, RetireAction):
-        return ActionType.RETIRE
-    if isinstance(action, CommitAction):
-        return ActionType.COMMIT
-    if isinstance(action, CloseNegativeAction):
-        return ActionType.CLOSE_NEGATIVE
-    raise TypeError(f"unsupported action {type(action).__name__}")
-
-
-def action_to_mapping(action: ResearchAction) -> dict[str, Any]:
-    """Return the public JSON representation used by scripted agents."""
-
-    kind = _action_type(action)
-    raw: dict[str, Any] = {"type": kind.value, "cost": action.cost}
-    if isinstance(action, ProposeHypothesisAction):
-        raw.update(
-            hypothesis_id=action.hypothesis_id,
-            claim=copy.deepcopy(dict(action.claim)),
-            metadata=copy.deepcopy(dict(action.metadata)),
-        )
-    elif isinstance(action, RecordProbeAction):
-        raw.update(
-            hypothesis_id=action.hypothesis_id,
-            probe_id=action.probe_id,
-            verdict=action.verdict.value,
-            result=copy.deepcopy(dict(action.result)),
-        )
-    elif isinstance(action, SubmitCandidateAction):
-        raw.update(
-            candidate_id=action.candidate_id,
-            hypothesis_id=action.hypothesis_id,
-            spec=copy.deepcopy(dict(action.spec)),
-            metadata=copy.deepcopy(dict(action.metadata)),
-        )
-    elif isinstance(action, RecordEvaluationAction):
-        raw.update(
-            candidate_id=action.candidate_id,
-            evaluation_id=action.evaluation_id,
-            stage=action.stage.value,
-            passed=action.passed,
-            metrics=copy.deepcopy(dict(action.metrics)),
-        )
-    elif isinstance(action, ReviseAction):
-        raw.update(
-            entity=action.entity.value,
-            source_id=action.source_id,
-            new_id=action.new_id,
-            replacement=copy.deepcopy(dict(action.replacement)),
-            reason=action.reason,
-            metadata=copy.deepcopy(dict(action.metadata)),
-        )
-    elif isinstance(action, RetireAction):
-        raw.update(entity=action.entity.value, entity_id=action.entity_id, reason=action.reason)
-    elif isinstance(action, CommitAction):
-        raw.update(candidate_id=action.candidate_id, metadata=copy.deepcopy(dict(action.metadata)))
-    elif isinstance(action, CloseNegativeAction):
-        raw.update(
-            reason=action.reason,
-            evidence_ids=list(action.evidence_ids),
-            metadata=copy.deepcopy(dict(action.metadata)),
-        )
-    return raw
-
-
-def _event_payload(action: ResearchAction) -> dict[str, Any]:
-    raw = action_to_mapping(action)
-    raw.pop("type")
-    raw.pop("cost")
-    return raw
+    return event
 
 
 @dataclass(frozen=True)
@@ -508,7 +291,7 @@ class HypothesisRecord:
     hypothesis_id: str
     claim: Mapping[str, Any]
     metadata: Mapping[str, Any]
-    status: Lifecycle = Lifecycle.PROPOSED
+    status: Lifecycle
     parent_id: str | None = None
     probe_ids: tuple[str, ...] = ()
     revised_to: str | None = None
@@ -523,9 +306,11 @@ class CandidateRecord:
     metadata: Mapping[str, Any]
     status: Lifecycle = Lifecycle.CANDIDATE
     parent_id: str | None = None
+    symmetry_evidence_ids: tuple[str, ...] = ()
     evaluation_ids: tuple[str, ...] = ()
     revised_to: str | None = None
     retired_reason: str | None = None
+    disposition_evidence_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -566,8 +351,8 @@ class ResearchState:
     last_seq: int = -1
 
     def __post_init__(self) -> None:
-        self.total_budget = _validated_cost(self.total_budget)
-        self.spent_budget = _validated_cost(self.spent_budget)
+        self.total_budget = _cost(self.total_budget)
+        self.spent_budget = _cost(self.spent_budget)
         if self.spent_budget > self.total_budget + 1e-12:
             raise BudgetExceeded(
                 f"spent budget {self.spent_budget} exceeds total budget {self.total_budget}"
@@ -627,9 +412,13 @@ class ResearchState:
                     "metadata": copy.deepcopy(dict(item.metadata)),
                     "status": item.status.value,
                     "parent_id": item.parent_id,
+                    "symmetry_evidence_ids": list(item.symmetry_evidence_ids),
                     "evaluation_ids": list(item.evaluation_ids),
                     "revised_to": item.revised_to,
                     "retired_reason": item.retired_reason,
+                    "disposition_evidence_ids": list(
+                        item.disposition_evidence_ids
+                    ),
                 }
                 for key, item in sorted(self.candidates.items())
             },
@@ -659,353 +448,728 @@ class ResearchState:
         }
 
 
+def _initial_hypothesis_status(claim: Mapping[str, Any]) -> Lifecycle:
+    if claim.get("kind") in {"ansatz_structure", "null_control"}:
+        return Lifecycle.READY
+    return Lifecycle.PROPOSED
+
+
 def _active_candidates(state: ResearchState, hypothesis_id: str) -> list[str]:
     return [
         candidate.candidate_id
         for candidate in state.candidates.values()
-        if candidate.hypothesis_id == hypothesis_id and candidate.status.value not in _TERMINAL
+        if candidate.hypothesis_id == hypothesis_id and candidate.status not in _TERMINAL
     ]
 
 
-def _apply_propose(state: ResearchState, action: ProposeHypothesisAction) -> None:
-    if action.hypothesis_id in state.hypotheses:
-        raise TransitionError(f"hypothesis already exists: {action.hypothesis_id}")
-    state.hypotheses[action.hypothesis_id] = HypothesisRecord(
-        hypothesis_id=action.hypothesis_id,
-        claim=copy.deepcopy(dict(action.claim)),
-        metadata=copy.deepcopy(dict(action.metadata)),
+def _validate_symmetry_evidence(
+    state: ResearchState, evidence_ids: Iterable[str]
+) -> tuple[str, ...]:
+    result = tuple(evidence_ids)
+    for evidence_id in result:
+        probe = state.probes.get(evidence_id)
+        if probe is None or probe.verdict is not ProbeVerdict.SUPPORTED:
+            raise TransitionError(
+                f"symmetry evidence must cite a supported probe: {evidence_id}"
+            )
+        hypothesis = state.hypotheses[probe.hypothesis_id]
+        if hypothesis.claim.get("kind") != "exact_pauli_symmetry":
+            raise TransitionError(
+                f"symmetry evidence does not cite an exact symmetry: {evidence_id}"
+            )
+    return result
+
+
+def comparison_point(record: EvaluationRecord) -> dict[str, Any] | None:
+    """Extract one fixed-promotion evaluator point for fair comparisons."""
+
+    policy = record.metrics.get("resource_policy")
+    energy = record.metrics.get("best_energy")
+    if (
+        record.stage is not EvaluationStage.PROMOTION
+        or record.metrics.get("valid") is not True
+        or not isinstance(policy, Mapping)
+        or policy.get("eligible") is not True
+        or isinstance(energy, bool)
+        or not isinstance(energy, (int, float))
+        or not math.isfinite(float(energy))
+        or not isinstance(policy.get("observed"), Mapping)
+    ):
+        return None
+    observed = policy["observed"]
+    if any(
+        isinstance(observed.get(name), bool)
+        or not isinstance(observed.get(name), int)
+        or observed[name] < 0
+        for name in _COMPARISON_RESOURCE_NAMES
+    ):
+        return None
+    audit = record.metrics.get("audit")
+    parameter_count = (
+        audit.get("unique_trainable_params") if isinstance(audit, Mapping) else None
+    )
+    if (
+        isinstance(parameter_count, bool)
+        or not isinstance(parameter_count, int)
+        or parameter_count < 0
+    ):
+        return None
+    return {
+        "candidate_id": record.candidate_id,
+        "evaluation_id": record.evaluation_id,
+        "stage": record.stage.value,
+        "passed": record.passed,
+        "best_energy": float(energy),
+        "resources": {
+            **{
+                name: int(observed[name])
+                for name in _COMPARISON_RESOURCE_NAMES
+            },
+            "unique_trainable_params": int(parameter_count),
+        },
+    }
+
+
+def comparison_dominates_target(
+    target: Mapping[str, Any], comparator: Mapping[str, Any]
+) -> bool:
+    """Return whether ``comparator`` dominates ``target`` under the local rule."""
+
+    target_energy = target["best_energy"]
+    comparator_energy = comparator["best_energy"]
+    if target_energy > comparator_energy + COMMIT_ENERGY_TOLERANCE:
+        return True
+    if abs(target_energy - comparator_energy) > COMMIT_ENERGY_TOLERANCE:
+        return False
+    target_resources = target["resources"]
+    comparator_resources = comparator["resources"]
+    return all(
+        target_resources[name] >= comparator_resources[name]
+        for name in target_resources
+    ) and any(
+        target_resources[name] > comparator_resources[name]
+        for name in target_resources
     )
 
 
-def _apply_probe(state: ResearchState, action: RecordProbeAction) -> None:
-    hypothesis = state.hypotheses.get(action.hypothesis_id)
-    if hypothesis is None:
-        raise TransitionError(f"unknown hypothesis: {action.hypothesis_id}")
-    if action.probe_id in state.probes:
-        raise TransitionError(f"probe already exists: {action.probe_id}")
-    if hypothesis.status in {Lifecycle.REVISED, Lifecycle.RETIRED}:
+def _valid_comparison_evaluation(record: EvaluationRecord) -> bool:
+    return comparison_point(record) is not None
+
+
+def _validate_promoted_disposition(
+    state: ResearchState,
+    candidate: CandidateRecord,
+    evidence_ids: Iterable[str],
+) -> tuple[str, ...]:
+    evidence = tuple(evidence_ids)
+    if candidate.status is not Lifecycle.PROMOTED:
+        if evidence:
+            raise TransitionError(
+                "comparison evidence is only valid when disposing a promoted candidate"
+            )
+        return ()
+    records = [state.evaluations.get(evidence_id) for evidence_id in evidence]
+    if any(record is None for record in records):
+        raise TransitionError("promoted disposition cites unknown evaluation evidence")
+    target = [
+        record
+        for record in records
+        if record is not None
+        and record.candidate_id == candidate.candidate_id
+        and record.stage is EvaluationStage.PROMOTION
+        and record.passed
+    ]
+    comparators = [
+        record
+        for record in records
+        if record is not None
+        and record.candidate_id != candidate.candidate_id
+        and state.candidates[record.candidate_id].hypothesis_id
+        != candidate.hypothesis_id
+        and _valid_comparison_evaluation(record)
+    ]
+    if len(target) != 1 or not comparators:
         raise TransitionError(
-            f"cannot probe hypothesis {action.hypothesis_id} in {hypothesis.status.value}"
+            "promoted disposition requires its passed promotion and a fair "
+            "different-hypothesis comparison"
         )
+    target_point = comparison_point(target[0])
+    if target_point is None:
+        raise TransitionError(
+            "promoted disposition target lacks valid promotion comparison metrics"
+        )
+    if not any(
+        (point := comparison_point(record)) is not None
+        and comparison_dominates_target(target_point, point)
+        for record in comparators
+    ):
+        raise TransitionError(
+            "promoted disposition requires a comparator that actually dominates "
+            "the target"
+        )
+    return evidence
 
-    next_status = (
-        Lifecycle.SUPPORTED
-        if action.verdict is ProbeVerdict.SUPPORTED
-        else Lifecycle.PROBED
+
+def _apply_propose(state: ResearchState, event: Mapping[str, Any]) -> None:
+    hypothesis_id = str(event["hypothesis_id"])
+    if hypothesis_id in state.hypotheses:
+        raise TransitionError(f"hypothesis already exists: {hypothesis_id}")
+    claim = dict(event["claim"])
+    state.hypotheses[hypothesis_id] = HypothesisRecord(
+        hypothesis_id=hypothesis_id,
+        claim=copy.deepcopy(claim),
+        metadata=copy.deepcopy(dict(event["metadata"])),
+        status=_initial_hypothesis_status(claim),
     )
-    state.probes[action.probe_id] = ProbeRecord(
-        probe_id=action.probe_id,
-        hypothesis_id=action.hypothesis_id,
-        verdict=action.verdict,
-        result=copy.deepcopy(dict(action.result)),
-        cost=action.cost,
+
+
+def _apply_probe(state: ResearchState, event: Mapping[str, Any]) -> None:
+    hypothesis_id = str(event["hypothesis_id"])
+    probe_id = str(event["probe_id"])
+    hypothesis = state.hypotheses.get(hypothesis_id)
+    if hypothesis is None:
+        raise TransitionError(f"unknown hypothesis: {hypothesis_id}")
+    if probe_id in state.probes:
+        raise TransitionError(f"probe already exists: {probe_id}")
+    if hypothesis.status is not Lifecycle.PROPOSED:
+        raise TransitionError(
+            f"cannot probe hypothesis {hypothesis_id} in {hypothesis.status.value}"
+        )
+    verdict = ProbeVerdict(event["verdict"])
+    next_status = {
+        ProbeVerdict.SUPPORTED: Lifecycle.SUPPORTED,
+        ProbeVerdict.REFUTED: Lifecycle.REFUTED,
+        ProbeVerdict.INCONCLUSIVE: Lifecycle.INCONCLUSIVE,
+    }[verdict]
+    state.probes[probe_id] = ProbeRecord(
+        probe_id=probe_id,
+        hypothesis_id=hypothesis_id,
+        verdict=verdict,
+        result=copy.deepcopy(dict(event["result"])),
+        cost=float(event["cost"]),
     )
-    state.hypotheses[action.hypothesis_id] = replace(
+    state.hypotheses[hypothesis_id] = replace(
         hypothesis,
         status=next_status,
-        probe_ids=hypothesis.probe_ids + (action.probe_id,),
+        probe_ids=hypothesis.probe_ids + (probe_id,),
     )
 
 
-def _apply_submit_candidate(state: ResearchState, action: SubmitCandidateAction) -> None:
-    if action.candidate_id in state.candidates:
-        raise TransitionError(f"candidate already exists: {action.candidate_id}")
-    hypothesis = state.hypotheses.get(action.hypothesis_id)
+def _apply_submit_candidate(state: ResearchState, event: Mapping[str, Any]) -> None:
+    candidate_id = str(event["candidate_id"])
+    hypothesis_id = str(event["hypothesis_id"])
+    if candidate_id in state.candidates:
+        raise TransitionError(f"candidate already exists: {candidate_id}")
+    hypothesis = state.hypotheses.get(hypothesis_id)
     if hypothesis is None:
-        raise TransitionError(f"unknown hypothesis: {action.hypothesis_id}")
-    if hypothesis.status is not Lifecycle.SUPPORTED:
+        raise TransitionError(f"unknown hypothesis: {hypothesis_id}")
+    if hypothesis.status not in {Lifecycle.READY, Lifecycle.SUPPORTED}:
         raise TransitionError(
-            f"candidate requires SUPPORTED hypothesis; {action.hypothesis_id} is "
+            f"candidate requires READY or SUPPORTED hypothesis; {hypothesis_id} is "
             f"{hypothesis.status.value}"
         )
-    state.candidates[action.candidate_id] = CandidateRecord(
-        candidate_id=action.candidate_id,
-        hypothesis_id=action.hypothesis_id,
-        spec=copy.deepcopy(dict(action.spec)),
-        metadata=copy.deepcopy(dict(action.metadata)),
+    parent_id = event.get("parent_id")
+    if parent_id is not None:
+        parent = state.candidates.get(str(parent_id))
+        if parent is None or parent.hypothesis_id != hypothesis_id:
+            raise TransitionError("candidate parent must exist under the same hypothesis")
+    symmetry_evidence_ids = _validate_symmetry_evidence(
+        state, event["symmetry_evidence_ids"]
+    )
+    state.candidates[candidate_id] = CandidateRecord(
+        candidate_id=candidate_id,
+        hypothesis_id=hypothesis_id,
+        spec=copy.deepcopy(dict(event["spec"])),
+        metadata=copy.deepcopy(dict(event["metadata"])),
+        parent_id=None if parent_id is None else str(parent_id),
+        symmetry_evidence_ids=symmetry_evidence_ids,
     )
 
 
-def _evaluation_transition(candidate: CandidateRecord, action: RecordEvaluationAction) -> Lifecycle:
-    if action.stage is EvaluationStage.AUDIT:
-        allowed = {Lifecycle.CANDIDATE, Lifecycle.AUDITED}
-        passed_status = Lifecycle.AUDITED
-    elif action.stage is EvaluationStage.SMOKE:
-        allowed = {Lifecycle.AUDITED, Lifecycle.SMOKE}
-        passed_status = Lifecycle.SMOKE
-    else:
-        allowed = {Lifecycle.SMOKE, Lifecycle.PROMOTED}
-        passed_status = Lifecycle.PROMOTED
-    if candidate.status not in allowed:
+def _evaluation_transition(candidate: CandidateRecord, stage: EvaluationStage) -> Lifecycle:
+    expected = {
+        EvaluationStage.AUDIT: (Lifecycle.CANDIDATE, Lifecycle.AUDITED),
+        EvaluationStage.SMOKE: (Lifecycle.AUDITED, Lifecycle.SMOKE),
+        EvaluationStage.PROMOTION: (Lifecycle.SMOKE, Lifecycle.PROMOTED),
+    }[stage]
+    if candidate.status is not expected[0]:
         raise TransitionError(
-            f"cannot run {action.stage.value} evaluation for {candidate.candidate_id} "
+            f"cannot run {stage.value} evaluation for {candidate.candidate_id} "
             f"in {candidate.status.value}"
         )
-    return passed_status if action.passed else Lifecycle.RETIRED
+    return expected[1]
 
 
-def _apply_evaluation(state: ResearchState, action: RecordEvaluationAction) -> None:
-    candidate = state.candidates.get(action.candidate_id)
+def _apply_evaluation(state: ResearchState, event: Mapping[str, Any]) -> None:
+    candidate_id = str(event["candidate_id"])
+    evaluation_id = str(event["evaluation_id"])
+    candidate = state.candidates.get(candidate_id)
     if candidate is None:
-        raise TransitionError(f"unknown candidate: {action.candidate_id}")
-    if action.evaluation_id in state.evaluations:
-        raise TransitionError(f"evaluation already exists: {action.evaluation_id}")
+        raise TransitionError(f"unknown candidate: {candidate_id}")
+    if evaluation_id in state.evaluations:
+        raise TransitionError(f"evaluation already exists: {evaluation_id}")
     hypothesis = state.hypotheses[candidate.hypothesis_id]
-    if hypothesis.status is not Lifecycle.SUPPORTED:
+    if hypothesis.status not in {Lifecycle.READY, Lifecycle.SUPPORTED}:
         raise TransitionError(
-            f"candidate's hypothesis {candidate.hypothesis_id} is no longer SUPPORTED"
+            f"candidate's hypothesis {candidate.hypothesis_id} is no longer active"
         )
-
-    next_status = _evaluation_transition(candidate, action)
-    state.evaluations[action.evaluation_id] = EvaluationRecord(
-        evaluation_id=action.evaluation_id,
-        candidate_id=action.candidate_id,
-        stage=action.stage,
-        passed=action.passed,
-        metrics=copy.deepcopy(dict(action.metrics)),
-        cost=action.cost,
+    stage = EvaluationStage(event["stage"])
+    passed_status = _evaluation_transition(candidate, stage)
+    next_status = passed_status if bool(event["passed"]) else Lifecycle.RETIRED
+    state.evaluations[evaluation_id] = EvaluationRecord(
+        evaluation_id=evaluation_id,
+        candidate_id=candidate_id,
+        stage=stage,
+        passed=bool(event["passed"]),
+        metrics=copy.deepcopy(dict(event["metrics"])),
+        cost=float(event["cost"]),
         status_before=candidate.status,
         status_after=next_status,
     )
-    state.candidates[action.candidate_id] = replace(
+    state.candidates[candidate_id] = replace(
         candidate,
         status=next_status,
-        evaluation_ids=candidate.evaluation_ids + (action.evaluation_id,),
-        retired_reason=None if action.passed else f"failed {action.stage.value} evaluation",
+        evaluation_ids=candidate.evaluation_ids + (evaluation_id,),
+        retired_reason=None if bool(event["passed"]) else f"failed {stage.value}",
     )
 
 
-def _apply_revise(state: ResearchState, action: ReviseAction) -> None:
-    if action.entity is EntityKind.HYPOTHESIS:
-        source = state.hypotheses.get(action.source_id)
+def _apply_revise(state: ResearchState, event: Mapping[str, Any]) -> None:
+    entity = str(event["entity"])
+    source_id = str(event["source_id"])
+    new_id = str(event["new_id"])
+    reason = str(event["reason"])
+    metadata = copy.deepcopy(dict(event["metadata"]))
+    if entity == "hypothesis":
+        source = state.hypotheses.get(source_id)
         if source is None:
-            raise TransitionError(f"unknown hypothesis: {action.source_id}")
-        if action.new_id in state.hypotheses:
-            raise TransitionError(f"hypothesis already exists: {action.new_id}")
+            raise TransitionError(f"unknown hypothesis: {source_id}")
+        if new_id in state.hypotheses:
+            raise TransitionError(f"hypothesis already exists: {new_id}")
         if source.status is Lifecycle.REVISED:
-            raise TransitionError(f"hypothesis already revised: {action.source_id}")
-        active = _active_candidates(state, action.source_id)
+            raise TransitionError(f"hypothesis was already revised: {source_id}")
+        active = _active_candidates(state, source_id)
         if active:
-            raise TransitionError(
-                f"retire or revise active candidates before revising hypothesis "
-                f"{action.source_id}: {active}"
-            )
-        source_status = Lifecycle.RETIRED if source.status is Lifecycle.RETIRED else Lifecycle.REVISED
-        state.hypotheses[action.source_id] = replace(
+            raise TransitionError(f"retire active candidates before revision: {active}")
+        replacement = copy.deepcopy(dict(event["replacement"]))
+        state.hypotheses[source_id] = replace(
             source,
-            status=source_status,
-            revised_to=action.new_id,
+            status=Lifecycle.REVISED,
+            revised_to=new_id,
         )
-        state.hypotheses[action.new_id] = HypothesisRecord(
-            hypothesis_id=action.new_id,
-            claim=copy.deepcopy(dict(action.replacement)),
-            metadata={
-                **copy.deepcopy(dict(action.metadata)),
-                "revision_reason": action.reason,
-            },
-            parent_id=action.source_id,
+        state.hypotheses[new_id] = HypothesisRecord(
+            hypothesis_id=new_id,
+            claim=replacement,
+            metadata={**metadata, "revision_reason": reason},
+            status=_initial_hypothesis_status(replacement),
+            parent_id=source_id,
         )
         return
 
-    source = state.candidates.get(action.source_id)
+    source = state.candidates.get(source_id)
     if source is None:
-        raise TransitionError(f"unknown candidate: {action.source_id}")
-    if source.status is Lifecycle.PROMOTED:
-        raise TransitionError(
-            f"promoted candidate {action.source_id} cannot be revised; commit it"
-        )
-    if action.new_id in state.candidates:
-        raise TransitionError(f"candidate already exists: {action.new_id}")
-    if source.status is Lifecycle.REVISED:
-        raise TransitionError(f"candidate already revised: {action.source_id}")
-    hypothesis = state.hypotheses[source.hypothesis_id]
-    if hypothesis.status is not Lifecycle.SUPPORTED:
-        raise TransitionError(
-            f"cannot revise candidate under {hypothesis.status.value} hypothesis"
-        )
-    source_status = Lifecycle.RETIRED if source.status is Lifecycle.RETIRED else Lifecycle.REVISED
-    state.candidates[action.source_id] = replace(
-        source,
-        status=source_status,
-        revised_to=action.new_id,
+        raise TransitionError(f"unknown candidate: {source_id}")
+    evidence_ids = _validate_promoted_disposition(
+        state, source, event["evidence_ids"]
     )
-    state.candidates[action.new_id] = CandidateRecord(
-        candidate_id=action.new_id,
+    if source.status is Lifecycle.REVISED:
+        raise TransitionError(f"candidate was already revised: {source_id}")
+    if new_id in state.candidates:
+        raise TransitionError(f"candidate already exists: {new_id}")
+    hypothesis = state.hypotheses[source.hypothesis_id]
+    if hypothesis.status not in {Lifecycle.READY, Lifecycle.SUPPORTED}:
+        raise TransitionError("cannot revise candidate under an inactive hypothesis")
+    state.candidates[source_id] = replace(
+        source,
+        status=Lifecycle.REVISED,
+        revised_to=new_id,
+        disposition_evidence_ids=evidence_ids,
+    )
+    state.candidates[new_id] = CandidateRecord(
+        candidate_id=new_id,
         hypothesis_id=source.hypothesis_id,
-        spec=copy.deepcopy(dict(action.replacement)),
+        spec=copy.deepcopy(dict(event["replacement"])),
         metadata={
             **copy.deepcopy(dict(source.metadata)),
-            **copy.deepcopy(dict(action.metadata)),
-            "revision_reason": action.reason,
+            **metadata,
+            "revision_reason": reason,
         },
-        parent_id=action.source_id,
+        parent_id=source_id,
+        symmetry_evidence_ids=_validate_symmetry_evidence(
+            state, event["symmetry_evidence_ids"]
+        ),
     )
 
 
-def _apply_retire(state: ResearchState, action: RetireAction) -> None:
-    if action.entity is EntityKind.HYPOTHESIS:
-        item = state.hypotheses.get(action.entity_id)
+def _apply_retire(state: ResearchState, event: Mapping[str, Any]) -> None:
+    entity = str(event["entity"])
+    entity_id = str(event["entity_id"])
+    reason = str(event["reason"])
+    if entity == "hypothesis":
+        item = state.hypotheses.get(entity_id)
         if item is None:
-            raise TransitionError(f"unknown hypothesis: {action.entity_id}")
-        if item.status in {Lifecycle.REVISED, Lifecycle.RETIRED}:
-            raise TransitionError(
-                f"hypothesis {action.entity_id} is already {item.status.value}"
-            )
-        active = _active_candidates(state, action.entity_id)
+            raise TransitionError(f"unknown hypothesis: {entity_id}")
+        if item.status in _TERMINAL:
+            raise TransitionError(f"hypothesis is already terminal: {entity_id}")
+        active = _active_candidates(state, entity_id)
         if active:
-            raise TransitionError(
-                f"retire active candidates before hypothesis {action.entity_id}: {active}"
-            )
-        state.hypotheses[action.entity_id] = replace(
+            raise TransitionError(f"retire active candidates first: {active}")
+        state.hypotheses[entity_id] = replace(
             item,
             status=Lifecycle.RETIRED,
-            retired_reason=action.reason,
+            retired_reason=reason,
         )
         return
-
-    item = state.candidates.get(action.entity_id)
+    item = state.candidates.get(entity_id)
     if item is None:
-        raise TransitionError(f"unknown candidate: {action.entity_id}")
-    if item.status is Lifecycle.PROMOTED:
-        raise TransitionError(
-            f"promoted candidate {action.entity_id} cannot be retired; commit it"
-        )
-    if item.status in {Lifecycle.REVISED, Lifecycle.RETIRED}:
-        raise TransitionError(f"candidate {action.entity_id} is already {item.status.value}")
-    state.candidates[action.entity_id] = replace(
+        raise TransitionError(f"unknown candidate: {entity_id}")
+    evidence_ids = _validate_promoted_disposition(
+        state, item, event["evidence_ids"]
+    )
+    if item.status in _TERMINAL:
+        raise TransitionError(f"candidate is already terminal: {entity_id}")
+    state.candidates[entity_id] = replace(
         item,
         status=Lifecycle.RETIRED,
-        retired_reason=action.reason,
+        retired_reason=reason,
+        disposition_evidence_ids=evidence_ids,
     )
 
 
-def _apply_commit(state: ResearchState, action: CommitAction) -> None:
-    candidate = state.candidates.get(action.candidate_id)
+def _apply_commit(state: ResearchState, event: Mapping[str, Any]) -> None:
+    candidate_id = str(event["candidate_id"])
+    candidate = state.candidates.get(candidate_id)
     if candidate is None:
-        raise TransitionError(f"unknown candidate: {action.candidate_id}")
+        raise TransitionError(f"unknown candidate: {candidate_id}")
     if candidate.status is not Lifecycle.PROMOTED:
         raise TransitionError(
-            f"commit requires PROMOTED candidate; {action.candidate_id} is "
-            f"{candidate.status.value}"
+            f"commit requires PROMOTED candidate; {candidate_id} is {candidate.status.value}"
         )
-    hypothesis = state.hypotheses[candidate.hypothesis_id]
-    if hypothesis.status is not Lifecycle.SUPPORTED:
-        raise TransitionError(
-            f"commit requires a SUPPORTED parent hypothesis; got {hypothesis.status.value}"
-        )
-    state.committed_candidate_id = action.candidate_id
-    state.commit_metadata = copy.deepcopy(dict(action.metadata))
+    state.committed_candidate_id = candidate_id
+    state.commit_metadata = copy.deepcopy(dict(event["metadata"]))
 
 
-def _apply_close_negative(state: ResearchState, action: CloseNegativeAction) -> None:
-    if not state.hypotheses:
-        raise TransitionError("negative close requires at least one investigated hypothesis")
+def _is_valid_numerical_evaluation(record: EvaluationRecord) -> bool:
+    objective_calls = record.metrics.get("objective_calls")
+    return (
+        record.stage in {EvaluationStage.SMOKE, EvaluationStage.PROMOTION}
+        and record.metrics.get("valid") is True
+        and isinstance(objective_calls, int)
+        and not isinstance(objective_calls, bool)
+        and objective_calls > 0
+    )
+
+
+def _has_objective_activity(record: EvaluationRecord) -> bool:
+    span = record.metrics.get("objective_energy_span")
+    active_norm = record.metrics.get("hamiltonian_active_norm")
+    fraction = record.metrics.get("objective_activity_fraction")
+    constant = record.metrics.get("constant_hamiltonian")
+    if (
+        isinstance(span, bool)
+        or not isinstance(span, (int, float))
+        or not math.isfinite(float(span))
+        or float(span) < 0.0
+        or isinstance(active_norm, bool)
+        or not isinstance(active_norm, (int, float))
+        or not math.isfinite(float(active_norm))
+        or float(active_norm) < 0.0
+        or not isinstance(constant, bool)
+    ):
+        return False
+    span_value = float(span)
+    norm_value = float(active_norm)
+    if constant:
+        return norm_value == 0.0 and fraction is None
+    if (
+        norm_value <= 0.0
+        or isinstance(fraction, bool)
+        or not isinstance(fraction, (int, float))
+        or not math.isfinite(float(fraction))
+        or float(fraction) < 0.0
+    ):
+        return False
+    fraction_value = float(fraction)
+    return math.isclose(
+        fraction_value,
+        span_value / norm_value,
+        rel_tol=1e-9,
+        abs_tol=1e-12,
+    ) and fraction_value >= MIN_NEGATIVE_OBJECTIVE_ACTIVITY_FRACTION
+
+
+def _is_numerical_falsification(record: EvaluationRecord) -> bool:
+    return (
+        _is_valid_numerical_evaluation(record)
+        and not record.passed
+        and _has_objective_activity(record)
+    )
+
+
+def _candidate_has_objective_activity(
+    state: ResearchState, candidate_id: str
+) -> bool:
+    return any(
+        evaluation.candidate_id == candidate_id
+        and _is_valid_numerical_evaluation(evaluation)
+        and _has_objective_activity(evaluation)
+        for evaluation in state.evaluations.values()
+    )
+
+
+def _hypothesis_lineage_root(state: ResearchState, hypothesis_id: str) -> str:
+    current = state.hypotheses[hypothesis_id]
+    seen: set[str] = set()
+    while current.parent_id is not None:
+        if current.hypothesis_id in seen:
+            raise TransitionError("hypothesis revision lineage contains a cycle")
+        seen.add(current.hypothesis_id)
+        parent = state.hypotheses.get(current.parent_id)
+        if parent is None:
+            raise TransitionError("hypothesis revision lineage has a missing parent")
+        current = parent
+    return current.hypothesis_id
+
+
+def derived_negative_close_evidence(state: ResearchState) -> tuple[str, ...]:
+    """Return the evaluator-owned evidence eligible for negative closure."""
+
+    evidence_ids = {
+        probe.probe_id
+        for probe in state.probes.values()
+        if probe.verdict is ProbeVerdict.REFUTED
+    }
+    evidence_ids.update(
+        evaluation.evaluation_id
+        for evaluation in state.evaluations.values()
+        if _is_numerical_falsification(evaluation)
+    )
+    for candidate in state.candidates.values():
+        evidence_ids.update(candidate.disposition_evidence_ids)
+    return tuple(sorted(evidence_ids))
+
+
+def validate_negative_close_coverage(
+    state: ResearchState,
+    evidence_ids: Iterable[str],
+) -> dict[str, Any]:
+    """Validate fixed search breadth and return its replayable summary."""
+
     live_hypotheses = sorted(
         item.hypothesis_id
         for item in state.hypotheses.values()
-        if item.status.value not in _TERMINAL
+        if item.status not in _TERMINAL
     )
     live_candidates = sorted(
         item.candidate_id
         for item in state.candidates.values()
-        if item.status.value not in _TERMINAL
+        if item.status not in _TERMINAL
     )
     if live_hypotheses or live_candidates:
         raise TransitionError(
-            "negative close requires every hypothesis and candidate to be terminal; "
+            "negative close requires terminal branches; "
             f"live_hypotheses={live_hypotheses} live_candidates={live_candidates}"
         )
-    for evidence_id in action.evidence_ids:
-        in_probes = evidence_id in state.probes
-        in_evaluations = evidence_id in state.evaluations
-        if in_probes and in_evaluations:
-            raise TransitionError(f"ambiguous evidence ID: {evidence_id}")
-        if not in_probes and not in_evaluations:
-            raise TransitionError(f"unknown evidence ID: {evidence_id}")
-    cited_ids = set(action.evidence_ids)
-    uncovered_hypotheses: list[str] = []
-    for hypothesis in state.hypotheses.values():
-        cited_refutation = any(
-            probe_id in cited_ids
-            and state.probes[probe_id].verdict is ProbeVerdict.REFUTED
-            for probe_id in hypothesis.probe_ids
-        )
-        cited_candidate_result = any(
-            evaluation.evaluation_id in cited_ids
-            and state.candidates[evaluation.candidate_id].hypothesis_id
-            == hypothesis.hypothesis_id
-            for evaluation in state.evaluations.values()
-        )
-        if not cited_refutation and not cited_candidate_result:
-            uncovered_hypotheses.append(hypothesis.hypothesis_id)
-    if uncovered_hypotheses:
+
+    cited = set(evidence_ids)
+    for evidence_id in cited:
+        if (evidence_id in state.probes) == (evidence_id in state.evaluations):
+            raise TransitionError(f"unknown or ambiguous evidence ID: {evidence_id}")
+
+    substantive_lineages = {
+        _hypothesis_lineage_root(state, hypothesis.hypothesis_id)
+        for hypothesis in state.hypotheses.values()
+        if hypothesis.claim.get("kind") != "null_control"
+    }
+    if not substantive_lineages:
         raise TransitionError(
-            "negative close lacks refutation/evaluation evidence for hypotheses: "
-            f"{sorted(uncovered_hypotheses)}"
+            "negative close requires a tested non-control hypothesis"
         )
+
+    failed_evaluations = [
+        evaluation
+        for evaluation in state.evaluations.values()
+        if evaluation.evaluation_id in cited
+        and _is_numerical_falsification(evaluation)
+    ]
+    dominated_candidates = [
+        candidate
+        for candidate in state.candidates.values()
+        if candidate.disposition_evidence_ids
+        and set(candidate.disposition_evidence_ids) <= cited
+        and _candidate_has_objective_activity(state, candidate.candidate_id)
+    ]
+
+    covered_lineages = {
+        _hypothesis_lineage_root(
+            state, state.probes[evidence_id].hypothesis_id
+        )
+        for evidence_id in cited
+        if evidence_id in state.probes
+        and state.probes[evidence_id].verdict is ProbeVerdict.REFUTED
+    }
+    covered_lineages.update(
+        _hypothesis_lineage_root(
+            state,
+            state.candidates[evaluation.candidate_id].hypothesis_id,
+        )
+        for evaluation in failed_evaluations
+    )
+    covered_lineages.update(
+        _hypothesis_lineage_root(state, candidate.hypothesis_id)
+        for candidate in dominated_candidates
+    )
+    covered_lineages &= substantive_lineages
+    uncovered = sorted(substantive_lineages - covered_lineages)
+    if uncovered:
+        flat_lineages = {
+            _hypothesis_lineage_root(
+                state,
+                state.candidates[evaluation.candidate_id].hypothesis_id,
+            )
+            for evaluation in state.evaluations.values()
+            if _is_valid_numerical_evaluation(evaluation)
+            and not evaluation.passed
+            and not _has_objective_activity(evaluation)
+        }
+        flat_uncovered = sorted(set(uncovered) & flat_lineages)
+        if flat_uncovered:
+            raise TransitionError(
+                "negative close does not count flat or unverified objective activity "
+                f"for lineages: {flat_uncovered}"
+            )
+        raise TransitionError(
+            f"negative close lacks evidence for lineages: {uncovered}"
+        )
+
+    numerical_candidate_ids = {
+        evaluation.candidate_id for evaluation in failed_evaluations
+    }
+    numerical_candidate_ids.update(
+        candidate.candidate_id for candidate in dominated_candidates
+    )
+    numerical_candidate_ids = {
+        candidate_id
+        for candidate_id in numerical_candidate_ids
+        if state.hypotheses[
+            state.candidates[candidate_id].hypothesis_id
+        ].claim.get("kind")
+        != "null_control"
+    }
+    structure_candidate_ids = {
+        candidate_id
+        for candidate_id in numerical_candidate_ids
+        if state.hypotheses[
+            state.candidates[candidate_id].hypothesis_id
+        ].claim.get("kind")
+        == "ansatz_structure"
+    }
+    structure_lineages = {
+        _hypothesis_lineage_root(
+            state, state.candidates[candidate_id].hypothesis_id
+        )
+        for candidate_id in structure_candidate_ids
+    }
+    promotion_candidate_ids = {
+        evaluation.candidate_id
+        for evaluation in failed_evaluations
+        if evaluation.stage is EvaluationStage.PROMOTION
+        and evaluation.candidate_id in numerical_candidate_ids
+    }
+    promotion_candidate_ids.update(
+        candidate.candidate_id
+        for candidate in dominated_candidates
+        if candidate.candidate_id in numerical_candidate_ids
+    )
+    feedback_revision_ids = {
+        candidate_id
+        for candidate_id in numerical_candidate_ids
+        if state.candidates[candidate_id].parent_id in numerical_candidate_ids
+    }
+    if (
+        not promotion_candidate_ids
+        and len(structure_lineages) < MIN_NEGATIVE_STRUCTURE_LINEAGES
+    ):
+        raise TransitionError(
+            "negative close requires objective-active numerical failures across at "
+            f"least {MIN_NEGATIVE_STRUCTURE_LINEAGES} independent ansatz_structure "
+            "lineages, or objective-active promotion-depth evidence; "
+            f"found {len(structure_lineages)} structure lineages"
+        )
+
+    return {
+        "covered_lineages": sorted(covered_lineages),
+        "feedback_revision_ids": sorted(feedback_revision_ids),
+        "numerical_candidate_ids": sorted(numerical_candidate_ids),
+        "promotion_candidate_ids": sorted(promotion_candidate_ids),
+        "search_mode": (
+            "promotion_depth"
+            if promotion_candidate_ids
+            else "structural_breadth"
+        ),
+        "structure_lineage_ids": sorted(structure_lineages),
+    }
+
+
+def _apply_close_negative(state: ResearchState, event: Mapping[str, Any]) -> None:
+    evidence_ids = tuple(event["evidence_ids"])
+    coverage = validate_negative_close_coverage(state, evidence_ids)
+    metadata = copy.deepcopy(dict(event["metadata"]))
+    if "coverage" in metadata and metadata["coverage"] != coverage:
+        raise TransitionError("negative close coverage summary does not match state")
     state.negative_closed = True
-    state.negative_close_reason = action.reason
-    state.negative_close_evidence_ids = action.evidence_ids
-    state.negative_close_metadata = copy.deepcopy(dict(action.metadata))
+    state.negative_close_reason = str(event["reason"])
+    state.negative_close_evidence_ids = evidence_ids
+    state.negative_close_metadata = metadata
 
 
-def apply_action(state: ResearchState, action_like: ResearchAction | Mapping[str, Any]) -> ResearchState:
-    """Pure reducer used both for live dispatch and deterministic replay."""
+_APPLIERS = {
+    "propose_hypothesis": _apply_propose,
+    "record_probe": _apply_probe,
+    "submit_candidate": _apply_submit_candidate,
+    "record_evaluation": _apply_evaluation,
+    "revise": _apply_revise,
+    "retire": _apply_retire,
+    "commit": _apply_commit,
+    "close_negative": _apply_close_negative,
+}
 
-    action = parse_action(action_like)
+
+def apply_event(state: ResearchState, event_like: Mapping[str, Any]) -> ResearchState:
+    """Apply one normalized controller event without mutating ``state``."""
+
+    event = normalize_event(event_like)
     if state.terminal:
-        raise TransitionError("research run is terminal; no further actions are allowed")
-    projected = state.spent_budget + action.cost
+        raise TransitionError("research run is terminal; no further events are allowed")
+    projected = state.spent_budget + float(event["cost"])
     if projected > state.total_budget + 1e-12:
         raise BudgetExceeded(
-            f"action costs {action.cost}, remaining budget is {state.remaining_budget}"
+            f"event costs {event['cost']}, remaining budget is {state.remaining_budget}"
         )
-
     next_state = copy.deepcopy(state)
-    if isinstance(action, ProposeHypothesisAction):
-        _apply_propose(next_state, action)
-    elif isinstance(action, RecordProbeAction):
-        _apply_probe(next_state, action)
-    elif isinstance(action, SubmitCandidateAction):
-        _apply_submit_candidate(next_state, action)
-    elif isinstance(action, RecordEvaluationAction):
-        _apply_evaluation(next_state, action)
-    elif isinstance(action, ReviseAction):
-        _apply_revise(next_state, action)
-    elif isinstance(action, RetireAction):
-        _apply_retire(next_state, action)
-    elif isinstance(action, CommitAction):
-        _apply_commit(next_state, action)
-    elif isinstance(action, CloseNegativeAction):
-        _apply_close_negative(next_state, action)
-    else:
-        raise AssertionError(f"unhandled action {type(action).__name__}")
+    _APPLIERS[str(event["type"])](next_state, event)
     next_state.spent_budget = projected
     return next_state
 
 
-def _action_from_event(event: RunEvent) -> ResearchAction:
-    # RunEvent intentionally freezes nested mappings. Its record view is
-    # the detached JSON representation expected by the action parser.
-    payload = event.to_record()["payload"]
-    raw = {"type": event.event_type, "cost": event.cost, **payload}
-    return parse_action(raw)
+def _event_mapping(event: RunEvent) -> dict[str, Any]:
+    payload = _json(event.payload, "payload")
+    return {
+        "type": event.event_type,
+        **payload,
+        "cost": event.cost,
+    }
 
 
 def replay_events(events: Iterable[RunEvent], *, total_budget: float) -> ResearchState:
-    """Rebuild state from an already parsed event sequence."""
-
     state = ResearchState(total_budget=total_budget)
-    expected_seq = 0
-    for event in events:
+    for expected_seq, event in enumerate(events):
         if event.seq != expected_seq:
             raise HistoryIntegrityError(
-                f"invalid replay sequence at event {event.seq}: "
-                f"expected seq={expected_seq}"
+                f"expected history seq {expected_seq}, got {event.seq}"
             )
-        state = apply_action(state, _action_from_event(event))
+        state = apply_event(state, _event_mapping(event))
         state.last_seq = event.seq
-        expected_seq += 1
     return state
 
 
@@ -1014,7 +1178,7 @@ def replay_history(history: JsonlRunHistory, *, total_budget: float) -> Research
 
 
 class ResearchLoop:
-    """A small event-sourced controller suitable for scripted or external agents."""
+    """Append normalized controller events and replay branch state."""
 
     def __init__(
         self,
@@ -1031,66 +1195,60 @@ class ResearchLoop:
     def state(self) -> ResearchState:
         return copy.deepcopy(self._state)
 
-    def dispatch(self, action_like: ResearchAction | Mapping[str, Any]) -> RunEvent:
-        action = parse_action(action_like)
-        current_events = self.history.read_events()
-        current_state = replay_events(current_events, total_budget=self._state.total_budget)
+    def dispatch(self, event_like: Mapping[str, Any]) -> RunEvent:
+        event = normalize_event(event_like)
+        current_state = replay_history(
+            self.history,
+            total_budget=self._state.total_budget,
+        )
         if current_state.to_dict() != self._state.to_dict():
             raise HistoryIntegrityError(
                 "research history changed since this ResearchLoop was opened"
             )
-
-        next_state = apply_action(self._state, action)
+        next_state = apply_event(self._state, event)
         expected_seq = self._state.last_seq + 1
-        event = self.history.append(
-            _action_type(action).value,
-            _event_payload(action),
-            cost=action.cost,
+        payload = {
+            key: value for key, value in event.items() if key not in {"type", "cost"}
+        }
+        recorded = self.history.append(
+            str(event["type"]),
+            payload,
+            cost=float(event["cost"]),
             expected_seq=expected_seq,
         )
-        if event.seq != expected_seq:
-            raise HistoryIntegrityError("history sequence changed during dispatch")
-        next_state.last_seq = event.seq
+        next_state.last_seq = recorded.seq
         self._state = next_state
-        return event
+        return recorded
 
-    def run_script(
-        self,
-        actions: Iterable[ResearchAction | Mapping[str, Any]],
-    ) -> ResearchState:
-        for action in actions:
-            self.dispatch(action)
+    def run_script(self, events: Iterable[Mapping[str, Any]]) -> ResearchState:
+        for event in events:
+            self.dispatch(event)
         return self.state
 
 
 __all__ = [
-    "ActionParseError",
-    "ActionType",
     "BudgetExceeded",
     "CandidateRecord",
-    "CloseNegativeAction",
-    "CommitAction",
-    "EntityKind",
+    "COMMIT_ENERGY_TOLERANCE",
+    "MIN_NEGATIVE_OBJECTIVE_ACTIVITY_FRACTION",
+    "MIN_NEGATIVE_STRUCTURE_LINEAGES",
     "EvaluationRecord",
     "EvaluationStage",
+    "EventFormatError",
     "HypothesisRecord",
     "Lifecycle",
     "ProbeRecord",
     "ProbeVerdict",
-    "ProposeHypothesisAction",
-    "RecordEvaluationAction",
-    "RecordProbeAction",
-    "ResearchAction",
     "ResearchError",
     "ResearchLoop",
     "ResearchState",
-    "RetireAction",
-    "ReviseAction",
-    "SubmitCandidateAction",
     "TransitionError",
-    "action_to_mapping",
-    "apply_action",
-    "parse_action",
+    "apply_event",
+    "comparison_dominates_target",
+    "comparison_point",
+    "derived_negative_close_evidence",
+    "normalize_event",
     "replay_events",
     "replay_history",
+    "validate_negative_close_coverage",
 ]

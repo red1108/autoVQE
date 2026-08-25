@@ -10,16 +10,19 @@ from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
 
 from .contracts import PublicProblem
 from .ansatz_ir import OperationSpec
+from .problem import hamiltonian_from_problem
 
 
 EXACT_SYMMETRY_TOLERANCE = 1e-10
+MIN_SPECIAL_CHARGE_FRACTION = 1e-3
 MAX_DENSE_PROBE_QUBITS = 8
 GENERATOR_HERMITICITY_TOLERANCE = 1e-12
 MIN_GENERATOR_NORM = 1e-8
 MAX_GENERATOR_TERMS = 256
 MAX_GENERATOR_COEFFICIENT = 1e6
 MAX_COMMUTATOR_TERM_PRODUCTS = 65_536
-PROBE_COST_TERM_BLOCK = 64
+PROBE_COST_TERM_BLOCK = 4_096
+MOMENT_COST_TERM_BLOCK = 64
 
 
 class ProbeValidationError(ValueError):
@@ -27,7 +30,7 @@ class ProbeValidationError(ValueError):
 
 
 @dataclass(frozen=True)
-class ProbeReceipt:
+class ProbeResult:
     probe_type: str
     metrics: dict[str, float | int | bool | str | list[float]]
     cost_units: float
@@ -38,23 +41,15 @@ class ProbeReceipt:
         return asdict(self)
 
 
-def hamiltonian_from_public(problem: PublicProblem) -> SparsePauliOp:
-    return SparsePauliOp.from_list(
-        [
-            (term.pauli, complex(term.real, term.imag))
-            for term in problem.pauli_terms
-        ]
-    ).simplify(atol=1e-14)
+def initial_state_circuit(problem: PublicProblem) -> QuantumCircuit:
+    """Build the evaluator-owned computational-basis initial state."""
 
-
-def reference_circuit_from_public(problem: PublicProblem) -> QuantumCircuit | None:
-    occupation = problem.reference.occupation
-    if occupation is None:
-        return None
+    occupation = problem.initial_state.occupation
     circuit = QuantumCircuit(problem.num_qubits)
-    for qubit, bit in enumerate(occupation):
-        if bit:
-            circuit.x(qubit)
+    if occupation is not None:
+        for qubit, bit in enumerate(occupation):
+            if bit:
+                circuit.x(qubit)
     return circuit
 
 
@@ -84,7 +79,7 @@ def validate_generator_observable(
     """Validate a physical Hermitian generator and return its active norm.
 
     The returned norm excludes the identity component.  It is also the scale
-    used to make reference-state variance tests invariant to an agent-chosen
+    used to make initial-state variance tests invariant to an agent-chosen
     overall coefficient.
     """
 
@@ -137,11 +132,6 @@ def validate_hamiltonian_observable(hamiltonian: SparsePauliOp) -> SparsePauliOp
     return simplified
 
 
-def _normalized_distance(left: SparsePauliOp, right: SparsePauliOp) -> float:
-    denominator = max(_coefficient_norm(left), _coefficient_norm(right), 1e-15)
-    return _coefficient_norm((left - right).simplify(atol=1e-14)) / denominator
-
-
 def normalized_commutator(
     hamiltonian: SparsePauliOp,
     generator: SparsePauliOp,
@@ -160,6 +150,12 @@ def normalized_commutator(
     h_norm = _coefficient_norm(centered_h)
     if h_norm <= 1e-14:
         raise ProbeValidationError("Hamiltonian has no non-identity component")
+    term_products = len(hamiltonian.paulis) * len(generator.simplify(atol=1e-14).paulis)
+    if term_products > MAX_COMMUTATOR_TERM_PRODUCTS:
+        raise ProbeValidationError(
+            "commutator probe exceeds the "
+            f"{MAX_COMMUTATOR_TERM_PRODUCTS}-term-product cap"
+        )
     commutator = (hamiltonian.compose(generator) - generator.compose(hamiltonian)).simplify(atol=1e-14)
     return _coefficient_norm(commutator) / (2.0 * h_norm * q_norm)
 
@@ -200,7 +196,6 @@ def validate_symmetry_generator(
 ) -> None:
     hamiltonian = validate_hamiltonian_observable(hamiltonian)
     validate_generator_observable(generator)
-    _ = normalized_commutator(hamiltonian, generator)
     if distance_from_hamiltonian_span(hamiltonian, generator) < min_hamiltonian_span_distance:
         raise ProbeValidationError("generator is a trivial copy of the Hamiltonian")
 
@@ -308,10 +303,10 @@ def _probe_inputs_and_cost(
                 f"{MAX_COMMUTATOR_TERM_PRODUCTS}-term-product cap"
             )
         blocks = max(1, math.ceil(term_products / PROBE_COST_TERM_BLOCK))
-        return probe_type, generator, round(0.1 * blocks, 10)
+        return probe_type, generator, round(0.25 * blocks, 10)
 
-    if probe_type == "reference_moments":
-        blocks = max(1, math.ceil(generator_terms / PROBE_COST_TERM_BLOCK))
+    if probe_type == "initial_state_moments":
+        blocks = max(1, math.ceil(generator_terms / MOMENT_COST_TERM_BLOCK))
         return probe_type, generator, round(0.25 * blocks, 10)
 
     raise ProbeValidationError(f"unsupported algebraic probe type: {probe_type!r}")
@@ -374,6 +369,104 @@ def operation_generator(
     raise ProbeValidationError(f"unsupported trusted operation macro: {operation.macro}")
 
 
+def validate_special_operation_relevance(
+    num_qubits: int,
+    operation: OperationSpec,
+    charge: SparsePauliOp,
+    *,
+    symmetry_residual: float,
+    sector_variance: float,
+    tolerance: float = EXACT_SYMMETRY_TOLERANCE,
+) -> tuple[float, float, float, float, float]:
+    """Validate that a symmetry is nontrivially relevant to an operation.
+
+    Commutation with a charge on a disjoint spectator is automatic and does
+    not justify a conservation-specialized gate.  This check therefore forms
+    ``Q_touch`` from the centered charge terms whose Pauli support intersects
+    the operation support.  It returns ``(||Q_touch||, residual)`` only when
+    that charge is a material fraction of the full active charge and the
+    trusted operation generator preserves it.
+    """
+
+    if isinstance(num_qubits, bool) or not isinstance(num_qubits, int) or num_qubits <= 0:
+        raise ProbeValidationError("num_qubits must be a positive integer")
+    if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)):
+        raise ProbeValidationError("relevance tolerance must be a finite positive number")
+    tolerance = float(tolerance)
+    if not math.isfinite(tolerance) or tolerance <= 0.0:
+        raise ProbeValidationError("relevance tolerance must be a finite positive number")
+    for value, name in (
+        (symmetry_residual, "symmetry residual"),
+        (sector_variance, "sector variance"),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) < 0.0
+        ):
+            raise ProbeValidationError(f"{name} must be finite and non-negative")
+    if charge.num_qubits != num_qubits:
+        raise ProbeValidationError("operation and charge qubit counts differ")
+    if any(qubit < 0 or qubit >= num_qubits for qubit in operation.qubits):
+        raise ProbeValidationError("operation support is outside the register")
+
+    full_active_norm = validate_generator_observable(charge)
+    centered_charge = _center_operator(charge.simplify(atol=1e-14))
+    labels = centered_charge.paulis.to_labels()
+    touching_terms = [
+        (label, complex(coefficient))
+        for label, coefficient in zip(
+            labels, centered_charge.coeffs, strict=True
+        )
+        if any(label[num_qubits - qubit - 1] != "I" for qubit in operation.qubits)
+    ]
+    if not touching_terms:
+        raise ProbeValidationError(
+            "claimed symmetry has no nontrivial charge on the special operation support"
+        )
+
+    touching_charge = SparsePauliOp.from_list(touching_terms).simplify(atol=1e-14)
+    touching_norm = _coefficient_norm(touching_charge)
+    relevant_fraction = touching_norm / full_active_norm
+    if relevant_fraction < MIN_SPECIAL_CHARGE_FRACTION:
+        raise ProbeValidationError(
+            "claimed symmetry charge on the special operation support is too small "
+            f"relative to the full charge: fraction={relevant_fraction:.3e}, "
+            f"minimum={MIN_SPECIAL_CHARGE_FRACTION:.3e}"
+        )
+
+    residual = normalized_commutator(
+        operation_generator(num_qubits, operation), touching_charge
+    )
+    if residual > tolerance:
+        raise ProbeValidationError(
+            "special operation does not preserve the overlapping symmetry charge: "
+            f"residual={residual:.3e}"
+        )
+    conditioned_symmetry_residual = float(symmetry_residual) / relevant_fraction
+    conditioned_sector_variance = float(sector_variance) / (
+        relevant_fraction * relevant_fraction
+    )
+    if conditioned_symmetry_residual > tolerance:
+        raise ProbeValidationError(
+            "claimed conservation is too weak on the special operation support: "
+            f"conditioned_residual={conditioned_symmetry_residual:.3e}"
+        )
+    if conditioned_sector_variance > tolerance:
+        raise ProbeValidationError(
+            "initial sector evidence is too weak on the special operation support: "
+            f"conditioned_variance={conditioned_sector_variance:.3e}"
+        )
+    return (
+        touching_norm,
+        relevant_fraction,
+        residual,
+        conditioned_symmetry_residual,
+        conditioned_sector_variance,
+    )
+
+
 def operation_symmetry_residuals(
     num_qubits: int,
     operations: Sequence[OperationSpec],
@@ -385,24 +478,24 @@ def operation_symmetry_residuals(
     ]
 
 
-def _statevector(reference: QuantumCircuit | Statevector | np.ndarray) -> Statevector:
-    if isinstance(reference, Statevector):
-        return reference
-    if isinstance(reference, QuantumCircuit):
-        if reference.parameters:
-            raise ProbeValidationError("reference circuit must be fully bound")
-        return Statevector.from_instruction(reference)
-    vector = np.asarray(reference, dtype=complex)
+def _statevector(initial_state: QuantumCircuit | Statevector | np.ndarray) -> Statevector:
+    if isinstance(initial_state, Statevector):
+        return initial_state
+    if isinstance(initial_state, QuantumCircuit):
+        if initial_state.parameters:
+            raise ProbeValidationError("initial-state circuit must be fully bound")
+        return Statevector.from_instruction(initial_state)
+    vector = np.asarray(initial_state, dtype=complex)
     return Statevector(vector)
 
 
-def reference_moments(
-    reference: QuantumCircuit | Statevector | np.ndarray,
+def initial_state_moments(
+    initial_state: QuantumCircuit | Statevector | np.ndarray,
     generator: SparsePauliOp,
 ) -> tuple[float, float]:
-    state = _statevector(reference)
+    state = _statevector(initial_state)
     if state.num_qubits != generator.num_qubits:
-        raise ProbeValidationError("reference and generator qubit counts differ")
+        raise ProbeValidationError("initial state and generator qubit counts differ")
     active_norm = validate_generator_observable(generator)
     mean = complex(state.expectation_value(generator))
     squared = generator.compose(generator).simplify(atol=1e-14)
@@ -483,8 +576,8 @@ def run_algebraic_probe(
     hamiltonian: SparsePauliOp,
     request: Mapping[str, Any],
     *,
-    reference: QuantumCircuit | Statevector | np.ndarray | None = None,
-) -> ProbeReceipt:
+    initial_state: QuantumCircuit | Statevector | np.ndarray | None = None,
+) -> ProbeResult:
     probe_type, generator, cost_units = _probe_inputs_and_cost(
         hamiltonian, request
     )
@@ -492,7 +585,7 @@ def run_algebraic_probe(
     if probe_type == "normalized_commutator":
         validate_symmetry_generator(hamiltonian, generator)
         residual = normalized_commutator(hamiltonian, generator)
-        return ProbeReceipt(
+        return ProbeResult(
             probe_type=probe_type,
             metrics={
                 "residual": residual,
@@ -502,11 +595,13 @@ def run_algebraic_probe(
             cost_units=cost_units,
         )
 
-    if probe_type == "reference_moments":
-        if reference is None:
-            raise ProbeValidationError("reference_moments requires a reference state")
-        mean, variance = reference_moments(reference, generator)
-        return ProbeReceipt(
+    if probe_type == "initial_state_moments":
+        if initial_state is None:
+            raise ProbeValidationError(
+                "initial_state_moments requires an initial state"
+            )
+        mean, variance = initial_state_moments(initial_state, generator)
+        return ProbeResult(
             probe_type=probe_type,
             metrics={"mean": mean, "variance": variance},
             cost_units=cost_units,
@@ -518,11 +613,11 @@ def run_algebraic_probe(
 def run_public_probe(
     problem: PublicProblem,
     request: Mapping[str, Any],
-) -> ProbeReceipt:
+) -> ProbeResult:
     """Run an evaluator-owned algebraic probe from an agent-safe problem."""
 
     return run_algebraic_probe(
-        hamiltonian_from_public(problem),
+        hamiltonian_from_problem(problem),
         request,
-        reference=reference_circuit_from_public(problem),
+        initial_state=initial_state_circuit(problem),
     )

@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 import unittest
 from dataclasses import replace
-from pathlib import Path
+
+from qiskit.quantum_info import SparsePauliOp
 
 from autovqe import prepare
 from autovqe.contracts import (
@@ -20,7 +21,30 @@ from autovqe.contracts import (
 from autovqe.observations import adapt_prepare_problem, public_problem_from_prepare
 
 
-ROOT = Path(__file__).resolve().parents[1]
+def _small_problem() -> prepare.Problem:
+    pauli_terms = [
+        {"pauli": "II", "coeff": -1.052373245772859},
+        {"pauli": "IZ", "coeff": 0.39793742484318045},
+        {"pauli": "ZI", "coeff": -0.39793742484318045},
+        {"pauli": "ZZ", "coeff": -0.01128010425623538},
+        {"pauli": "XX", "coeff": 0.18093119978423156},
+    ]
+    hamiltonian = SparsePauliOp.from_list(
+        [(term["pauli"], term["coeff"]) for term in pauli_terms]
+    ).simplify()
+    reference_energy, reference_state = prepare.exact_reference(hamiltonian, 2)
+    return prepare.Problem(
+        name="small_test_problem",
+        num_qubits=2,
+        pauli_terms=pauli_terms,
+        hamiltonian=hamiltonian,
+        reference_energy=reference_energy,
+        reference_state=reference_state,
+        symmetry=None,
+        basis_gates=["rx", "ry", "rz", "cx"],
+        coupling_map=[[0, 1], [1, 0]],
+        initial_state_hint=[1, 0],
+    )
 
 
 class CanonicalSerializationTests(unittest.TestCase):
@@ -46,7 +70,7 @@ class CanonicalSerializationTests(unittest.TestCase):
 
 class ProblemContractTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.problem = prepare.load_problem(ROOT / "examples" / "h2_2q.json")
+        self.problem = _small_problem()
 
     def test_adapter_splits_public_private_and_agent_safe_views(self) -> None:
         views = adapt_prepare_problem(self.problem)
@@ -77,7 +101,7 @@ class ProblemContractTests(unittest.TestCase):
 
     def test_public_problem_name_and_observation_json_are_stable(self) -> None:
         first = adapt_prepare_problem(self.problem)
-        second_problem = prepare.load_problem(ROOT / "examples" / "h2_2q.json")
+        second_problem = _small_problem()
         second = adapt_prepare_problem(second_problem)
 
         self.assertEqual(first.public_problem.problem_id, second.public_problem.problem_id)

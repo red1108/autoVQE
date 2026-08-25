@@ -684,7 +684,22 @@ def check(condition: bool, message: str) -> None:
 
 
 def run_self_check(with_smoke: bool = False) -> int:
-    for path in ["autovqe/prepare.py", "autovqe/train.py", "autovqe/harness.py"]:
+    for path in [
+        "autovqe/prepare.py",
+        "autovqe/train.py",
+        "autovqe/harness.py",
+        "autovqe/contracts.py",
+        "autovqe/observations.py",
+        "autovqe/ansatz_ir.py",
+        "autovqe/macros.py",
+        "autovqe/compiler.py",
+        "autovqe/probes.py",
+        "autovqe/evaluator.py",
+        "autovqe/ledger.py",
+        "autovqe/research.py",
+        "autovqe/controller.py",
+        "autovqe/research_cli.py",
+    ]:
         py_compile.compile(path, doraise=True)
     check(True, "python files compile")
 
@@ -697,6 +712,12 @@ def run_self_check(with_smoke: bool = False) -> int:
 
     problem = prepare.load_problem()
     backend = prepare.build_backend_target(problem)
+    from .observations import adapt_prepare_problem
+
+    views = adapt_prepare_problem(problem)
+    safe_json = views.observation_bundle.to_canonical_json()
+    check("reference_energy" not in safe_json, "agent observation hides reference energy")
+    check("model_class" not in safe_json, "agent observation hides model-class answers")
     if any(candidate.name == "heisenberg_hva" for candidate in profile.candidates):
         check(profile.model_class == "weighted_heisenberg_graph", "current audit maps Heisenberg evidence to weighted_heisenberg_graph")
         check(True, "audit recommends heisenberg_hva")
@@ -1142,7 +1163,13 @@ def main() -> int:
 
     inspect_parser = subparsers.add_parser("inspect", help="analyze a problem JSON file")
     inspect_parser.add_argument("--problem", default=str(DEFAULT_PROBLEM))
-    inspect_parser.add_argument("--json", action="store_true")
+    inspect_output = inspect_parser.add_mutually_exclusive_group()
+    inspect_output.add_argument("--json", action="store_true")
+    inspect_output.add_argument(
+        "--agent-json",
+        action="store_true",
+        help="emit the recommendation-free, exact-reference-free agent observation",
+    )
 
     subparsers.add_parser("plan", help="print Hamiltonian-aware experiment runbook")
     subparsers.add_parser("results", help="summarize results.tsv")
@@ -1182,9 +1209,73 @@ def main() -> int:
     solve_parser.add_argument("--timeout", type=float, default=None, help="override timeout for each stage")
     solve_parser.add_argument("--output-dir", default=str(SOLVE_DIR))
 
+    research_parser = subparsers.add_parser(
+        "research",
+        help="run the typed, evaluator-owned closed research protocol",
+    )
+    research_subparsers = research_parser.add_subparsers(
+        dest="research_command",
+        required=True,
+    )
+    research_init = research_subparsers.add_parser("init", help="initialize a research run")
+    research_init.add_argument("--problem", default=str(DEFAULT_PROBLEM))
+    research_init.add_argument("--run-dir", default="research_run")
+    research_init.add_argument("--budget", type=float, default=100.0)
+    research_init.add_argument(
+        "--sealed",
+        action="store_true",
+        help=(
+            "seal with AUTOVQE_EVALUATOR_KEY and an external monotonic head in "
+            "AUTOVQE_EVALUATOR_ANCHOR_DIR"
+        ),
+    )
+
+    research_step = research_subparsers.add_parser(
+        "step",
+        help="execute one untrusted agent action through the trusted controller",
+    )
+    research_step.add_argument("--problem", default=str(DEFAULT_PROBLEM))
+    research_step.add_argument("--run-dir", default="research_run")
+    research_step.add_argument("--action", required=True, help="path to an ActionSpec JSON file")
+    research_step_security = research_step.add_mutually_exclusive_group()
+    research_step_security.add_argument(
+        "--require-sealed",
+        action="store_true",
+        help="explicitly select the default sealed verification mode",
+    )
+    research_step_security.add_argument(
+        "--allow-unsealed",
+        action="store_true",
+        help="development only: allow a local_unsealed run",
+    )
+
+    research_status = research_subparsers.add_parser(
+        "status",
+        help="verify and summarize a research ledger",
+    )
+    research_status.add_argument("--run-dir", default="research_run")
+    research_status_security = research_status.add_mutually_exclusive_group()
+    research_status_security.add_argument(
+        "--require-sealed",
+        action="store_true",
+        help="explicitly select the default sealed verification mode",
+    )
+    research_status_security.add_argument(
+        "--allow-unsealed",
+        action="store_true",
+        help="development only: allow a local_unsealed run",
+    )
+
     args = parser.parse_args()
 
     if args.command == "inspect":
+        if args.agent_json:
+            from .observations import adapt_prepare_problem
+            from .research_cli import render_json
+
+            views = adapt_prepare_problem(prepare.load_problem(args.problem))
+            print(render_json(views.observation_bundle))
+            return 0
         profile = analyze_problem(args.problem)
         if args.json:
             print(profile_to_json(profile))
@@ -1218,6 +1309,58 @@ def main() -> int:
 
     if args.command == "solve":
         return run_solve(args)
+
+    if args.command == "research":
+        from . import research_cli
+
+        if args.research_command == "init":
+            evaluator_key = research_cli.evaluator_key_from_environment(
+                required=args.sealed
+            ) if args.sealed else None
+            anchor_dir = research_cli.evaluator_anchor_dir_from_environment(
+                required=args.sealed
+            ) if args.sealed else None
+            result = research_cli.initialize_run(
+                args.problem,
+                args.run_dir,
+                total_budget=args.budget,
+                evaluator_key=evaluator_key,
+                anchor_dir=anchor_dir,
+            )
+        elif args.research_command == "step":
+            require_sealed = not args.allow_unsealed
+            evaluator_key = research_cli.evaluator_key_from_environment(
+                required=require_sealed
+            ) if require_sealed else None
+            anchor_dir = research_cli.evaluator_anchor_dir_from_environment(
+                required=require_sealed
+            ) if require_sealed else None
+            result = research_cli.execute_action_file(
+                args.problem,
+                args.run_dir,
+                args.action,
+                evaluator_key=evaluator_key,
+                anchor_dir=anchor_dir,
+                require_sealed=require_sealed,
+            )
+        elif args.research_command == "status":
+            require_sealed = not args.allow_unsealed
+            evaluator_key = research_cli.evaluator_key_from_environment(
+                required=require_sealed
+            ) if require_sealed else None
+            anchor_dir = research_cli.evaluator_anchor_dir_from_environment(
+                required=require_sealed
+            ) if require_sealed else None
+            result = research_cli.run_status(
+                args.run_dir,
+                evaluator_key=evaluator_key,
+                anchor_dir=anchor_dir,
+                require_sealed=require_sealed,
+            )
+        else:
+            raise AssertionError(f"unhandled research command: {args.research_command}")
+        print(research_cli.render_json(result))
+        return 0
 
     raise AssertionError(f"unhandled command: {args.command}")
 

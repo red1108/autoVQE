@@ -5,128 +5,125 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](pyproject.toml)
 [![Qiskit](https://img.shields.io/badge/Qiskit-1.0%2B-6133BD.svg)](pyproject.toml)
 
-AutoVQE is a Hamiltonian-to-ansatz research tool for variational quantum
-eigensolvers. Given a Pauli Hamiltonian, it inspects operator structure,
-symmetries, locality, coupling constraints, and reference-state hints, then
-proposes ansatz candidates that fit those facts.
+AutoVQE is a Hamiltonian-to-ansatz research harness for variational quantum
+eigensolvers. It helps an agent inspect a Pauli Hamiltonian, form falsifiable
+hypotheses about useful structure, test candidate ansatzes, and retain the
+evidence behind the final decision.
 
-It is not built to memorize bundled examples. It is meant to help a researcher
-answer the actual VQE design question: for this Hamiltonian, which ansatz family
-should I try, and what evidence supports that choice?
+The project is designed to avoid two common shortcuts: hard-coding a circuit
+for a named fixture and trusting candidate-reported energies or resource
+counts. Candidates use a typed ansatz representation; the evaluator derives
+optimized energy, parameter counts, gate counts, depth, and symmetry checks.
 
 ## Highlights
 
-- Hamiltonian inspection for locality, support graph, Pauli structure, and
-  candidate-family recommendations.
-- Structured ansatz families for U(1) exchange, SU(2)-style Heisenberg HVA,
-  TFIM counterdiabatic schedules, Pauli HVA, and shallow HEA baselines.
-- Target-driven solve loop with explicit relative/absolute tolerance checks when
-  a reference energy is available.
-- Gate-count and parameter-count reporting after Qiskit transpilation.
-- Reproducible JSON fixtures that probe different Hamiltonian regimes: small
-  chemistry, TFIM, Heisenberg, weighted spin graphs, and a 16-qubit N2 stress
-  test.
+- Mechanical Hamiltonian observations without hidden reference answers.
+- A typed ansatz IR with a small audited macro registry.
+- Algebraic probes for commutators, conserved quantities, reference sectors,
+  and gradient evidence.
+- Symmetry-preserving exchange gates only when the measured Hamiltonian
+  structure supports their use.
+- A closed hypothesis → probe → candidate → audit → smoke → promotion loop.
+- Evaluator-owned metrics and canonical resource accounting to limit reward
+  hacking through hard-coded values or misleading parameter reports.
+- A legacy solver retained for calibration and compatibility checks.
 
-## Why AutoVQE?
+## Quick start
 
-Most VQE demos hard-code a problem and a circuit. AutoVQE keeps the evaluator
-stable and lets the current Hamiltonian drive candidate design. The system should
-derive decisions from facts such as conserved sectors, Pauli support graph,
-commuting structure, term locality, coefficient scale, reference occupation, and
-hardware connectivity. That makes it easier to compare ideas such as
-symmetry-preserving ansatzes, Hamiltonian variational ansatz layers, and
-operator-pool candidates without writing one-off rules for named fixtures.
-
-The GitHub root is intentionally short. Runtime code lives under `autovqe/`,
-while docs, fixtures, and community metadata stay in their own directories:
-
-- `autovqe/harness.py` is the public CLI for inspection, calibration runs, and
-  tolerance checks.
-- `autovqe/train.py` proposes and optimizes ansatz candidates.
-- `autovqe/prepare.py` loads problem JSON files, builds Hamiltonians, computes
-  exact references for small systems, and reports compiled gate counts.
-- `examples/` contains calibration fixtures for different Hamiltonian regimes.
-- `docs/agent_protocol.md` is the agent protocol for automated research runs.
-- `docs/` contains agent-facing playbooks, calibration notes, release notes, and
-  the roadmap.
-- `.github/` contains CI, templates, contributing guidance, security policy,
-  citation metadata, and the code of conduct.
-
-## Quick Start
-
-Install [`uv`](https://docs.astral.sh/uv/) first, then run:
+Install [`uv`](https://docs.astral.sh/uv/), then run:
 
 ```bash
 uv sync
 uv run python -m autovqe.harness check
-uv run python -m autovqe.harness solve --rel-tol 0.001
+uv run python -m autovqe.harness inspect --problem examples/ising_1d_5q.json
 ```
 
-The default solve target is only a fast smoke test. For real use, pass the
-Hamiltonian JSON you want to study:
-
-```bash
-uv run python -m autovqe.harness inspect --problem path/to/problem.json
-uv run python -m autovqe.harness solve path/to/problem.json --rel-tol 0.001
-```
-
-To run the bundled small regression suite:
+The compatibility solver remains available:
 
 ```bash
 uv run python -m autovqe.harness solve \
   examples/h2_2q.json \
   examples/h2_4q.json \
   examples/ising_1d_5q.json \
-  --rel-tol 0.001
+  --rel-tol 0.001 \
+  --max-stages 2
 ```
 
-`solve` prints a target check using:
+`solve` may use fixture reference data and is therefore a regression path, not
+an independent ansatz-discovery result.
 
-```text
-abs(best_energy - reference_energy) <= max(abs_tol, rel_tol * abs(reference_energy))
-```
+## Closed research loop
 
-Example output:
-
-```text
-target_status: passed=True gap=0.000908030202 threshold=0.001857275030 rel_error=0.048890%
-solve_rollup:
-- examples/h2_2q.json: passed=True ... family=pauli_hva stage=smoke
-```
-
-## CLI
+Initialize a local development run:
 
 ```bash
-# Inspect Hamiltonian structure and recommended ansatz families.
-uv run python -m autovqe.harness inspect --problem examples/ising_1d_5q.json
-
-# Print a Hamiltonian-aware runbook for the default example.
-uv run python -m autovqe.harness plan
-
-# Run isolated smoke campaigns over calibration fixtures.
-uv run python -m autovqe.harness benchmark
-
-# Include larger spin-chain regime probes.
-uv run python -m autovqe.harness benchmark --include-hard
-
-# Run the target-driven solver on a specific problem.
-uv run python -m autovqe.harness solve examples/ising_1d_5q.json --rel-tol 0.001
+uv run python -m autovqe.harness research init \
+  --problem path/to/hamiltonian.json \
+  --run-dir .autovqe-runtime/research/demo \
+  --budget 100
 ```
 
-Generated experiment files such as `results.tsv`, `run.log`,
-`benchmark_runs/`, and `solve_runs/` are ignored by git.
+An agent submits one JSON action at a time:
 
-## Problem Format
+```bash
+uv run python -m autovqe.harness research step \
+  --problem path/to/hamiltonian.json \
+  --run-dir .autovqe-runtime/research/demo \
+  --action action.json \
+  --allow-unsealed
 
-Problems are JSON files with Pauli terms and optional hardware constraints:
+uv run python -m autovqe.harness research status \
+  --run-dir .autovqe-runtime/research/demo \
+  --allow-unsealed
+```
+
+Actions can register hypotheses, request probes, submit or revise typed
+candidates, run fixed evaluation stages, retire disproven branches, and request
+a terminal commit or grounded negative close. See
+[the protocol](docs/agent_protocol.md) and [the loop guide](docs/agent_loop.md).
+
+`local_unsealed` mode is for development. It tests the workflow but is not a
+security boundary because the agent and evaluator share a filesystem identity.
+For an isolated Codex campaign, use the operator procedure in
+[meta_agent/README.md](meta_agent/README.md).
+
+## Trust boundary
+
+The public Hamiltonian and reference-state preparation may be visible to the
+agent. Private references, exact target values, evaluator state, and optimized
+parameter bindings are evaluator-side data.
+
+Agent submissions may describe circuit structure and parameter sharing, but
+may not provide trusted energy, resource metrics, or hidden numeric literals.
+The compiler and evaluator derive those values. A controller-accepted
+`positive_commit` proves only that a candidate passed the configured local
+promotion rule; an external holdout scorer is still required for a ground-state
+or generalization claim.
+
+The supported variational macros are deliberately small:
+
+- `Rx`, `Ry`, `Rz`
+- `PauliRotation`
+- `XXRotation`, `YYRotation`, `ZZRotation`
+- `XYExchange`, `IsotropicExchange`
+
+Every variational macro is identity at zero and decomposes into the canonical
+resource basis `{rz, sx, x, cx}`. Conservation-oriented macros require probe
+evidence for the corresponding symmetry and still undergo operation-level
+commutator checks. See [the ansatz playbook](docs/ansatz_playbook.md).
+
+## Problem format
+
+Problems are JSON files containing Pauli terms and optional public execution
+constraints:
 
 ```json
 {
   "name": "example",
   "pauli_terms": [
-    { "pauli": "ZI", "coeff": -1.0 },
-    { "pauli": "IZ", "coeff": -1.0 },
-    { "pauli": "XX", "coeff": 0.2 }
+    {"pauli": "ZI", "coeff": -1.0},
+    {"pauli": "IZ", "coeff": -1.0},
+    {"pauli": "XX", "coeff": 0.2}
   ],
   "basis_gates": ["rx", "ry", "rz", "cx"],
   "coupling_map": [[0, 1], [1, 0]],
@@ -134,83 +131,36 @@ Problems are JSON files with Pauli terms and optional hardware constraints:
 }
 ```
 
-If `reference_energy` is omitted and the system is small enough, AutoVQE uses
-exact diagonalization to compute it.
+Bundled examples are calibration fixtures, not release holdouts. A harness
+change informed by a holdout result must retire that problem into the
+development set.
 
-## Ansatz Families
+## Repository map
 
-The harness classifies each Hamiltonian from its Pauli structure and chooses a
-candidate order before running experiments. Built-in families include U(1)
-number-preserving exchange layers, Pauli term-evolution HVA,
-Heisenberg/exchange HVA, TFIM schedules with parity-preserving
-counterdiabatic edge moves, and shallow hardware-efficient baselines. A single
-shared-angle `exp(-i theta H)` candidate is not accepted as a VQE ansatz.
+- `autovqe/ansatz_ir.py`, `macros.py`, and `compiler.py`: typed candidates and
+  trusted compilation.
+- `autovqe/probes.py` and `evaluator.py`: evaluator-owned evidence and metrics.
+- `autovqe/research.py`, `controller.py`, and `ledger.py`: lifecycle, budget,
+  terminal rules, and replay.
+- `autovqe/harness.py`: public CLI, including the research subcommands.
+- `meta_agent/`: Codex campaign templates and bridge tooling.
+- `examples/`: public calibration fixtures.
+- `docs/`: protocol, ansatz method, release, and roadmap details.
 
-Hardware-efficient ansatzes are treated as baselines, not as the default
-scientific explanation for every Hamiltonian.
-
-For method-selection context, read `docs/ansatz_playbook.md`. The intended
-design is that domain knowledge lives in docs until an experiment justifies
-turning it into code.
-
-## Calibration Fixtures
-
-Fixtures are not the purpose of AutoVQE. They are probes used to keep the
-Hamiltonian-analysis and ansatz-selection logic honest. A change should improve
-general behavior for a class of operators, not special-case a file name.
-
-This small regression command is expected to pass:
+## Development
 
 ```bash
-uv run python -m autovqe.harness solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
-```
-
-Representative current regression results:
-
-| Problem | Best family | Relative error |
-| --- | --- | --- |
-| `h2_2q` | `pauli_hva` | 0.0489% |
-| `h2_4q` | `pauli_hva` | 0.0961% |
-| `ising_1d_5q` | `tfim_counterdiabatic` | 0.0957% |
-
-The larger spin-chain and chemistry fixtures are regime probes. For example,
-`examples/tfim_n10_g1_open.json` stresses non-commuting TFIM structure,
-`examples/heisenberg_n10_open.json` stresses symmetry-preserving exchange/HVA
-logic, `examples/h2_4q_pennylane_0p6614.json` checks a small chemistry mapping,
-and `examples/n2_16q_pennylane_sto3g_active14e8o_r2p07416.json` stresses large
-chemistry metadata and U(1)-style sector preservation. If one of these fails,
-the correct response is to inspect the Hamiltonian facts and improve the general
-candidate policy, not to add "if fixture X, use ansatz Y" logic.
-
-When a reference energy is present, `solve` reports the raw optimized VQE circuit
-energy against that reference. Classical post-processing may be studied
-separately, but it must be labeled separately and must not be presented as the
-VQE circuit result.
-
-## Development Checks
-
-```bash
-uv run python -m py_compile autovqe/prepare.py autovqe/train.py autovqe/harness.py
+uv run python -m unittest discover -s tests
 uv run python -m autovqe.harness check
-uv run python -m autovqe.harness solve examples/h2_2q.json examples/h2_4q.json examples/ising_1d_5q.json --rel-tol 0.001 --max-stages 2
+uv run python -m compileall -q autovqe meta_agent tests
 git diff --check
 ```
 
-See [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for PR expectations and
-[docs/release_checklist.md](docs/release_checklist.md) for release checks.
+AutoVQE is an alpha research tool. See the [roadmap](docs/roadmap.md),
+[release checklist](docs/release_checklist.md), and
+[contributing guide](.github/CONTRIBUTING.md).
 
-## Project Status
-
-AutoVQE is an alpha research tool. The CLI and problem JSON format are small
-and usable, but internals may change as new Hamiltonian-regime evidence lands.
-See [docs/roadmap.md](docs/roadmap.md) and
-[docs/changelog.md](docs/changelog.md) for current direction.
-
-## Citation
+## Citation and license
 
 If AutoVQE helps your research, cite the repository using
-[.github/CITATION.cff](.github/CITATION.cff).
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+[.github/CITATION.cff](.github/CITATION.cff). Licensed under the [MIT License](LICENSE).

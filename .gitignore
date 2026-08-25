@@ -1,18 +1,39 @@
-.venv/
-__pycache__/
-*.pyc
-.python-version
-results.tsv
-run.log
-benchmark_*/
-solve_runs*/
-.DS_Store
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-.coverage
-htmlcov/
+# Python environments and caches
+/.venv/
+**/__pycache__/
+*.py[cod]
+/.python-version
+/.pytest_cache/
+/.ruff_cache/
+/.mypy_cache/
+/.coverage
+/htmlcov/
 *.egg-info/
 
-# For AI agents
-.codex/
+# Legacy harness outputs
+/results.tsv
+/run.log
+/benchmark_*/
+/solve_runs*/
+/research_run*/
+
+# Generated research, agent, and evaluator runs.
+/.autovqe-runtime/
+/meta_agent_run*/
+/meta_agent_logs/
+
+# Local secrets are never repository artifacts. Production evaluator secrets
+# belong in an OS secret store outside the Codex workspace, not merely here.
+/.env
+/.env.*
+!/.env.example
+/.secrets/
+*.secret
+*.key
+
+# Codex client-local configuration is personal state; tracked prompts live in
+# /meta_agent instead.
+/.codex/
+
+# Operating-system files
+.DS_Store

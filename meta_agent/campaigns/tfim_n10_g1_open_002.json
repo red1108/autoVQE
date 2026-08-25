@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "campaign_id": "tfim_n10_g1_open_002",
+  "research_mode": "discovery",
+  "problem": "examples/tfim_n10_g1_open.json",
+  "total_budget": 30.0,
+  "model_label": "Codex (current app configuration; local integration)",
+  "local_agent_bundle": ".autovqe-runtime/agent/tfim_n10_g1_open_002",
+  "local_evaluator_run": ".autovqe-runtime/evaluator/tfim_n10_g1_open_002"
+}

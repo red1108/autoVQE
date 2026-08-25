@@ -39,7 +39,7 @@ class LeanProblemTests(unittest.TestCase):
     def test_loads_backend_state_and_compact_observation(self) -> None:
         problem = load(payload())
         self.assertEqual(problem.num_qubits, 2)
-        self.assertEqual(problem.initial_state.occupation, (1, 0))
+        self.assertEqual(problem.initial_occupation, (1, 0))
         self.assertEqual(problem.backend.coupling_map, ((0, 1), (1, 0)))
         self.assertEqual(hamiltonian_from_problem(problem).num_qubits, 2)
 

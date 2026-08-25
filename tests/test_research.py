@@ -4,10 +4,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import autovqe.research as research
+from autovqe.evaluator import EvaluationResult
 from autovqe.research import (
     ResearchError,
     execute_action,
@@ -38,24 +38,17 @@ def _write_problem(path: Path, problem: dict | None = None) -> None:
 
 def _rotation(pauli: str, qubits: list[int], parameter: str) -> dict:
     return {
-        "macro": "PauliRotation",
+        "gate": "PauliRotation",
         "qubits": qubits,
-        "parameters": {
-            "angle": {
-                "constant": 0.0,
-                "terms": [{"parameter": parameter, "coefficient": 1.0}],
-            }
-        },
-        "options": {"pauli": pauli},
+        "parameter": parameter,
+        "pauli": pauli,
     }
 
 
-def _spec(name: str, parameters: list[str], operations: list[dict]) -> dict:
+def _spec(operations: list[dict]) -> dict:
     return {
         "version": 1,
-        "name": name,
         "num_qubits": 2,
-        "parameters": [{"name": parameter} for parameter in parameters],
         "operations": operations,
     }
 
@@ -65,61 +58,39 @@ def _submit_structure(
     hypothesis_id: str,
     candidate_id: str,
     spec: dict,
-) -> None:
+) -> dict:
     execute_action(
         run_dir,
         {
             "type": "propose_hypothesis",
             "hypothesis_id": hypothesis_id,
-            "claim": {"kind": "ansatz_structure", "family": hypothesis_id},
+            "family": hypothesis_id,
+            "prediction": "the proposed structure improves the initial state",
         },
     )
-    execute_action(
+    return execute_action(
         run_dir,
         {
             "type": "submit_candidate",
             "candidate_id": candidate_id,
             "hypothesis_id": hypothesis_id,
             "spec": spec,
-            "metadata": {"prediction": "fixed evaluation improves the baseline"},
         },
     )
 
 
-class _FixedEvaluation:
-    def __init__(self, energy: float) -> None:
-        self.valid = True
-        self.best_energy = energy
-        self.violations: tuple[str, ...] = ()
-        self.optimized_parameter_binding = {"theta": 0.0}
-        self.metrics = {
-            f"{prefix}_{suffix}": 1
-            for prefix in (
-                "template",
-                "audit_worst",
-                "canonical_template",
-                "canonical_audit_worst",
-            )
-            for suffix in ("twoq_count", "total_gate_count", "depth")
-        }
-
-    def to_dict(self) -> dict:
-        return {
-            "valid": True,
-            "best_energy": self.best_energy,
-            "trace_summary": [[1, self.best_energy]],
-            "objective_calls": 32,
-            "optimizer": "fixed-test",
-            "seed": 7,
-            "optimized_parameter_binding": dict(self.optimized_parameter_binding),
-            "audit": {"unique_trainable_params": 1},
-            "metrics": dict(self.metrics),
-            "violations": [],
-            "objective_energy_span": 1.0,
-            "hamiltonian_active_norm": 1.0,
-            "objective_activity_fraction": 1.0,
-            "constant_hamiltonian": False,
-        }
+def _fixed_evaluation(energy: float, activity: float = 1.0) -> EvaluationResult:
+    return EvaluationResult(
+        valid=True,
+        best_energy=energy,
+        baseline_energy=0.0,
+        trace_summary=((1, energy),),
+        objective_calls=32,
+        optimized_parameter_binding={"theta": 0.0},
+        audit={"unique_trainable_params": 1},
+        resources={"parameters": 1, "twoq_count": 1, "total_gate_count": 1, "depth": 1},
+        objective_activity_fraction=activity,
+    )
 
 
 class ResearchLoopTests(unittest.TestCase):
@@ -140,10 +111,8 @@ class ResearchLoopTests(unittest.TestCase):
     def test_binding_is_hidden_until_terminal_replay(self) -> None:
         run_dir = self.initialize()
         self.source.write_text("{}\n", encoding="utf-8")
-        target = _spec("yx", ["theta"], [_rotation("YX", [0, 1], "theta")])
+        target = _spec([_rotation("YX", [0, 1], "theta")])
         comparator = _spec(
-            "xx-z",
-            ["alpha", "beta"],
             [
                 _rotation("XX", [0, 1], "alpha"),
                 _rotation("Z", [0], "beta"),
@@ -153,11 +122,8 @@ class ResearchLoopTests(unittest.TestCase):
             ("yx-branch", "yx", target),
             ("ordered-branch", "xx-z", comparator),
         ):
-            _submit_structure(run_dir, hypothesis_id, candidate_id, spec)
-            audit = execute_action(
-                run_dir, {"type": "evaluate_candidate", "candidate_id": candidate_id}
-            )
-            self.assertEqual(audit["result"]["stage"], "audit")
+            submitted = _submit_structure(run_dir, hypothesis_id, candidate_id, spec)
+            self.assertTrue(submitted["result"]["audit_passed"])
             smoke = execute_action(
                 run_dir, {"type": "evaluate_candidate", "candidate_id": candidate_id}
             )
@@ -168,7 +134,7 @@ class ResearchLoopTests(unittest.TestCase):
         execute_action(run_dir, {"type": "commit", "candidate_id": "yx"})
 
         self.assertNotIn(
-            "optimized_parameter_binding", json.dumps(run_status(run_dir, full=True))
+            "optimized_parameter_binding", json.dumps(run_status(run_dir))
         )
         self.assertNotIn(
             "optimized_parameter_binding",
@@ -184,45 +150,79 @@ class ResearchLoopTests(unittest.TestCase):
 
     def test_agent_cannot_submit_evaluator_events(self) -> None:
         run_dir = self.initialize()
-        with self.assertRaisesRegex(ResearchError, "evaluator-owned"):
-            execute_action(run_dir, {"type": "record_evaluation"})
+        for action_type in ("record_evaluation", "record_symmetry_probe"):
+            with self.subTest(action_type=action_type):
+                with self.assertRaisesRegex(ResearchError, "evaluator-owned"):
+                    execute_action(run_dir, {"type": action_type})
 
-    def test_null_control_is_not_a_structural_comparator(self) -> None:
+    def test_only_falsifiable_structure_hypotheses_are_accepted(self) -> None:
         run_dir = self.initialize()
-        _submit_structure(
-            run_dir,
-            "target-structure",
-            "target",
-            _spec("target", ["theta"], [_rotation("YX", [0, 1], "theta")]),
-        )
+        with self.assertRaisesRegex(ResearchError, "prediction or falsifier"):
+            execute_action(
+                run_dir,
+                {
+                    "type": "propose_hypothesis",
+                    "hypothesis_id": "unfalsifiable",
+                    "family": "empty claim",
+                },
+            )
+        with self.assertRaisesRegex(ResearchError, "invalid external action fields"):
+            execute_action(
+                run_dir,
+                {
+                    "type": "propose_hypothesis",
+                    "hypothesis_id": "legacy-control",
+                    "claim": {"kind": "null_control"},
+                },
+            )
+
+    def test_failed_automatic_audit_allows_a_fresh_candidate(self) -> None:
+        run_dir = self.initialize()
         execute_action(
             run_dir,
             {
                 "type": "propose_hypothesis",
-                "hypothesis_id": "empty-control",
-                "claim": {"kind": "null_control"},
+                "hypothesis_id": "repairable",
+                "family": "ordered excitation",
+                "falsifier": "no allowed rotation improves the initial state",
             },
         )
-        execute_action(
+        rejected = execute_action(
             run_dir,
             {
                 "type": "submit_candidate",
                 "candidate_id": "empty",
-                "hypothesis_id": "empty-control",
-                "spec": _spec("empty", [], []),
+                "hypothesis_id": "repairable",
+                "spec": _spec([]),
             },
         )
-        for candidate_id in ("target", "empty"):
+        self.assertFalse(rejected["result"]["audit_passed"])
+        state = run_status(run_dir)["state"]
+        self.assertEqual(state["candidates"]["empty"]["status"], "RETIRED")
+        self.assertEqual(
+            state["candidates"]["empty"]["latest_evaluation"]["stage"], "audit"
+        )
+
+        accepted = execute_action(
+            run_dir,
+            {
+                "type": "submit_candidate",
+                "candidate_id": "replacement",
+                "hypothesis_id": "repairable",
+                "spec": _spec(
+                    [_rotation("YX", [0, 1], "theta")],
+                ),
+            },
+        )
+        self.assertTrue(accepted["result"]["audit_passed"])
+        with self.assertRaisesRegex(ResearchError, "unsupported external action"):
             execute_action(
-                run_dir, {"type": "evaluate_candidate", "candidate_id": candidate_id}
-            )
-            smoke = execute_action(
-                run_dir, {"type": "evaluate_candidate", "candidate_id": candidate_id}
-            )
-            self.assertTrue(smoke["result"]["passed"])
-        with self.assertRaisesRegex(ResearchError, "different structure root"):
-            execute_action(
-                run_dir, {"type": "evaluate_candidate", "candidate_id": "target"}
+                run_dir,
+                {
+                    "type": "revise_candidate",
+                    "source_id": "empty",
+                    "new_id": "replacement-2",
+                },
             )
 
     def test_structure_family_names_cannot_create_fake_independence(self) -> None:
@@ -232,7 +232,8 @@ class ResearchLoopTests(unittest.TestCase):
             {
                 "type": "propose_hypothesis",
                 "hypothesis_id": "first",
-                "claim": {"kind": "ansatz_structure", "family": "Boundary   HVA"},
+                "family": "Boundary   HVA",
+                "prediction": "the boundary order lowers energy",
             },
         )
         with self.assertRaisesRegex(ResearchError, "duplicates existing hypothesis"):
@@ -241,7 +242,8 @@ class ResearchLoopTests(unittest.TestCase):
                 {
                     "type": "propose_hypothesis",
                     "hypothesis_id": "cosmetic-copy",
-                    "claim": {"kind": "ansatz_structure", "family": " boundary hva "},
+                    "family": " boundary hva ",
+                    "falsifier": "the copied family does not improve",
                 },
             )
 
@@ -261,100 +263,48 @@ class ResearchLoopTests(unittest.TestCase):
         )
         run_dir = self.root / "exchange-run"
         initialize_run(source, run_dir, total_budget=100)
-        execute_action(
-            run_dir,
-            {
-                "type": "propose_hypothesis",
-                "hypothesis_id": "global-z",
-                "claim": {
-                    "kind": "exact_pauli_symmetry",
-                    "generator": {"type": "global_pauli_sum", "pauli": "Z"},
-                },
-            },
-        )
         probe_id = execute_action(
-            run_dir, {"type": "request_probe", "hypothesis_id": "global-z"}
+            run_dir,
+            {
+                "type": "request_symmetry_probe",
+                "probe_id": "global-z",
+                "generator": {"type": "global_pauli_sum", "pauli": "Z"},
+            },
         )["result"]["probe_id"]
-        with self.assertRaisesRegex(ResearchError, "primary hypothesis"):
-            execute_action(
-                run_dir,
-                {
-                    "type": "submit_candidate",
-                    "candidate_id": "misowned",
-                    "hypothesis_id": "global-z",
-                    "spec": _spec(
-                        "misowned", ["theta"], [_rotation("XX", [0, 1], "theta")]
-                    ),
-                    "metadata": {"prediction": "symmetry is not a structure branch"},
-                },
-            )
         execute_action(
             run_dir,
             {
                 "type": "propose_hypothesis",
                 "hypothesis_id": "exchange-structure",
-                "claim": {
-                    "kind": "ansatz_structure",
-                    "family": "shared XX+YY exchange",
-                },
-            },
-        )
-        generic = _spec(
-            "generic",
-            ["theta"],
-            [
-                _rotation("XX", [0, 1], "theta"),
-                _rotation("YY", [0, 1], "theta"),
-            ],
-        )
-        execute_action(
-            run_dir,
-            {
-                "type": "submit_candidate",
-                "candidate_id": "generic",
-                "hypothesis_id": "exchange-structure",
-                "spec": generic,
-                "metadata": {"prediction": "shared exchange lowers the baseline"},
+                "family": "native number-conserving exchange",
+                "prediction": "the exchange direction lowers the baseline",
             },
         )
         specialized = _spec(
-            "specialized",
-            ["theta"],
             [
                 {
-                    "macro": "XYExchange",
+                    "gate": "XYExchange",
                     "qubits": [0, 1],
-                    "parameters": {
-                        "angle": {
-                            "constant": 0.0,
-                            "terms": [
-                                {"parameter": "theta", "coefficient": 1.0}
-                            ],
-                        }
-                    },
-                    "options": {},
+                    "parameter": "theta",
                 }
             ],
         )
-        execute_action(
+        submitted = execute_action(
             run_dir,
             {
-                "type": "revise",
-                "entity": "candidate",
-                "source_id": "generic",
-                "new_id": "specialized",
-                "replacement": specialized,
-                "reason": "supported conservation permits native exchange",
-                "metadata": {"prediction": "same family with fewer routed gates"},
+                "type": "submit_candidate",
+                "candidate_id": "specialized",
+                "hypothesis_id": "exchange-structure",
+                "spec": specialized,
                 "symmetry_evidence_ids": [probe_id],
             },
         )
-        audit = execute_action(
-            run_dir, {"type": "evaluate_candidate", "candidate_id": "specialized"}
+        self.assertTrue(submitted["result"]["audit_passed"])
+        self.assertEqual(submitted["result"]["resources"]["twoq_count"], 2)
+        self.assertEqual(
+            run_status(run_dir)["state"]["symmetry_probes"][probe_id]["verdict"],
+            "supported",
         )
-        self.assertTrue(audit["result"]["passed"])
-        observed = audit["result"]["resource_policy"]["observed"]
-        self.assertEqual(observed["conservative_twoq_count"], 2)
 
     def test_failed_comparator_promotion_does_not_block_recovery(self) -> None:
         run_dir = self.initialize()
@@ -362,30 +312,19 @@ class ResearchLoopTests(unittest.TestCase):
             run_dir,
             "target-root",
             "target",
-            _spec("target", ["theta"], [_rotation("YX", [0, 1], "theta")]),
+            _spec([_rotation("YX", [0, 1], "theta")]),
         )
         _submit_structure(
             run_dir,
             "comparator-root",
             "comparator",
-            _spec("comparator", ["theta"], [_rotation("XY", [0, 1], "theta")]),
+            _spec([_rotation("XY", [0, 1], "theta")]),
         )
-        for candidate_id in ("target", "comparator"):
-            audit = execute_action(
-                run_dir, {"type": "evaluate_candidate", "candidate_id": candidate_id}
-            )
-            self.assertTrue(audit["result"]["passed"])
-
         energies = iter((-1.0, -1.0, -1.0, -0.5))
-        with (
-            patch.object(research.ResearchController, "_baseline", return_value=0.0),
-            patch.object(
-                research,
-                "evaluate_public_problem",
-                side_effect=lambda problem, spec, protocol: SimpleNamespace(
-                    result=_FixedEvaluation(next(energies))
-                ),
-            ),
+        with patch.object(
+            research,
+            "evaluate_public_problem",
+            side_effect=lambda problem, spec, protocol: _fixed_evaluation(next(energies)),
         ):
             for candidate_id in ("target", "comparator", "target"):
                 result = execute_action(
@@ -404,7 +343,8 @@ class ResearchLoopTests(unittest.TestCase):
             {
                 "type": "propose_hypothesis",
                 "hypothesis_id": "recovery-root",
-                "claim": {"kind": "ansatz_structure", "family": "recovery ordering"},
+                "family": "recovery ordering",
+                "prediction": "a third ordering improves the baseline",
             },
         )
         self.assertTrue(recovered["result"]["accepted"])
@@ -415,7 +355,7 @@ class ResearchLoopTests(unittest.TestCase):
             run_dir,
             "shared-root",
             "target",
-            _spec("target", ["theta"], [_rotation("YX", [0, 1], "theta")]),
+            _spec([_rotation("YX", [0, 1], "theta")]),
         )
         execute_action(
             run_dir,
@@ -424,38 +364,24 @@ class ResearchLoopTests(unittest.TestCase):
                 "candidate_id": "sibling",
                 "hypothesis_id": "shared-root",
                 "spec": _spec(
-                    "sibling",
-                    ["theta", "phase"],
                     [
                         _rotation("YX", [0, 1], "theta"),
                         _rotation("Z", [0], "phase"),
                     ],
                 ),
-                "metadata": {"prediction": "phase conditioning improves this root"},
             },
         )
         _submit_structure(
             run_dir,
             "fair-root",
             "fair",
-            _spec("fair", ["theta"], [_rotation("XY", [0, 1], "theta")]),
+            _spec([_rotation("XY", [0, 1], "theta")]),
         )
-        for candidate_id in ("target", "sibling", "fair"):
-            audit = execute_action(
-                run_dir, {"type": "evaluate_candidate", "candidate_id": candidate_id}
-            )
-            self.assertTrue(audit["result"]["passed"])
-
         energies = iter((-1.0, -2.0, -0.9, -1.0, -0.9, -2.0))
-        with (
-            patch.object(research.ResearchController, "_baseline", return_value=0.0),
-            patch.object(
-                research,
-                "evaluate_public_problem",
-                side_effect=lambda problem, spec, protocol: SimpleNamespace(
-                    result=_FixedEvaluation(next(energies))
-                ),
-            ),
+        with patch.object(
+            research,
+            "evaluate_public_problem",
+            side_effect=lambda problem, spec, protocol: _fixed_evaluation(next(energies)),
         ):
             for candidate_id in (
                 "target",
@@ -475,49 +401,11 @@ class ResearchLoopTests(unittest.TestCase):
             execute_action(run_dir, {"type": "commit", "candidate_id": "target"})
 
     def test_negative_close_needs_two_active_failed_structures(self) -> None:
-        class FailedEvaluation:
-            valid = True
-            best_energy = 0.1
-            violations: tuple[str, ...] = ()
-            metrics = {
-                f"{prefix}_{suffix}": 1
-                for prefix in (
-                    "template",
-                    "audit_worst",
-                    "canonical_template",
-                    "canonical_audit_worst",
-                )
-                for suffix in ("twoq_count", "total_gate_count", "depth")
-            }
-
-            def to_dict(self) -> dict:
-                return {
-                    "valid": True,
-                    "best_energy": self.best_energy,
-                    "trace_summary": [[1, self.best_energy]],
-                    "objective_calls": 32,
-                    "optimizer": "fixed-test",
-                    "seed": 7,
-                    "optimized_parameter_binding": {"theta": 0.0},
-                    "audit": {"unique_trainable_params": 1},
-                    "metrics": self.metrics,
-                    "violations": [],
-                    "objective_energy_span": 0.1,
-                    "hamiltonian_active_norm": 1.0,
-                    "objective_activity_fraction": 0.1,
-                    "constant_hamiltonian": False,
-                }
-
         run_dir = self.initialize()
-        with (
-            patch.object(research.ResearchController, "_baseline", return_value=0.0),
-            patch.object(
-                research,
-                "evaluate_public_problem",
-                side_effect=lambda problem, spec, protocol: SimpleNamespace(
-                    result=FailedEvaluation()
-                ),
-            ),
+        with patch.object(
+            research,
+            "evaluate_public_problem",
+            side_effect=lambda problem, spec, protocol: _fixed_evaluation(0.1, 0.1),
         ):
             for index, pauli in enumerate(("YX", "XY"), 1):
                 hypothesis_id = f"branch-{index}"
@@ -527,14 +415,8 @@ class ResearchLoopTests(unittest.TestCase):
                     hypothesis_id,
                     candidate_id,
                     _spec(
-                        candidate_id,
-                        ["theta"],
                         [_rotation(pauli, [0, 1], "theta")],
                     ),
-                )
-                execute_action(
-                    run_dir,
-                    {"type": "evaluate_candidate", "candidate_id": candidate_id},
                 )
                 failed = execute_action(
                     run_dir,
@@ -544,9 +426,8 @@ class ResearchLoopTests(unittest.TestCase):
                 execute_action(
                     run_dir,
                     {
-                        "type": "retire",
-                        "entity": "hypothesis",
-                        "entity_id": hypothesis_id,
+                        "type": "retire_hypothesis",
+                        "hypothesis_id": hypothesis_id,
                         "reason": "candidate was numerically falsified",
                     },
                 )
@@ -562,25 +443,18 @@ class ResearchLoopTests(unittest.TestCase):
         )
         self.assertEqual(run_result(run_dir)["decision"], "negative_close")
 
-    def test_kind_hops_cannot_manufacture_negative_close_breadth(self) -> None:
+    def test_hypothesis_revisions_cannot_manufacture_negative_close_breadth(self) -> None:
         run_dir = self.initialize()
-        with (
-            patch.object(research.ResearchController, "_baseline", return_value=0.0),
-            patch.object(
-                research,
-                "evaluate_public_problem",
-                side_effect=lambda problem, spec, protocol: SimpleNamespace(
-                    result=_FixedEvaluation(0.1)
-                ),
-            ),
+        with patch.object(
+            research,
+            "evaluate_public_problem",
+            side_effect=lambda problem, spec, protocol: _fixed_evaluation(0.1),
         ):
             _submit_structure(
                 run_dir,
                 "root-a",
                 "candidate-a",
                 _spec(
-                    "candidate-a",
-                    ["theta"],
                     [_rotation("YX", [0, 1], "theta")],
                 ),
             )
@@ -588,34 +462,14 @@ class ResearchLoopTests(unittest.TestCase):
                 run_dir, {"type": "evaluate_candidate", "candidate_id": "candidate-a"}
             )
             execute_action(
-                run_dir, {"type": "evaluate_candidate", "candidate_id": "candidate-a"}
-            )
-            execute_action(
                 run_dir,
                 {
-                    "type": "revise",
-                    "entity": "hypothesis",
+                    "type": "revise_hypothesis",
                     "source_id": "root-a",
-                    "new_id": "symmetry-hop",
-                    "replacement": {
-                        "kind": "exact_pauli_symmetry",
-                        "generator": {"type": "global_pauli_sum", "pauli": "Z"},
-                    },
-                    "reason": "test whether changing claim kind creates a new root",
-                },
-            )
-            execute_action(
-                run_dir,
-                {
-                    "type": "revise",
-                    "entity": "hypothesis",
-                    "source_id": "symmetry-hop",
                     "new_id": "structure-hop",
-                    "replacement": {
-                        "kind": "ansatz_structure",
-                        "family": "post-symmetry ordering",
-                    },
-                    "reason": "return to a structural claim in the same lineage",
+                    "family": "reordered descendant",
+                    "prediction": "the revised ordering improves the baseline",
+                    "reason": "revise the structure without creating independence",
                 },
             )
             execute_action(
@@ -625,15 +479,9 @@ class ResearchLoopTests(unittest.TestCase):
                     "candidate_id": "candidate-b",
                     "hypothesis_id": "structure-hop",
                     "spec": _spec(
-                        "candidate-b",
-                        ["theta"],
                         [_rotation("XY", [0, 1], "theta")],
                     ),
-                    "metadata": {"falsifier": "fixed smoke does not improve baseline"},
                 },
-            )
-            execute_action(
-                run_dir, {"type": "evaluate_candidate", "candidate_id": "candidate-b"}
             )
             execute_action(
                 run_dir, {"type": "evaluate_candidate", "candidate_id": "candidate-b"}
@@ -641,9 +489,8 @@ class ResearchLoopTests(unittest.TestCase):
         execute_action(
             run_dir,
             {
-                "type": "retire",
-                "entity": "hypothesis",
-                "entity_id": "structure-hop",
+                "type": "retire_hypothesis",
+                "hypothesis_id": "structure-hop",
                 "reason": "the descendant candidate failed smoke",
             },
         )

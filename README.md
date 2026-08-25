@@ -41,8 +41,10 @@ The only optional top-level fields are:
 - `coupling_map`: directed pairs of distinct in-range qubit indices.
 - `initial_state_hint`: one integer `0` or `1` per qubit.
 - `source_note`: nonempty provenance text.
-- `symmetry`: encoding or sector metadata described in
-  [the protocol](docs/agent_protocol.md).
+- `symmetry`: optional encoding or sector metadata. Recognized keys are
+  `mapping`, `basis`, `orbital_order`, `spin_order`, `spin_orbitals`,
+  `active_orbitals`, `active_electrons`, `particle_number`, `magnetization`,
+  `spin_projection`, `total_spin`, and `parity`.
 
 Unknown or duplicate fields, complex or non-finite coefficients, inconsistent
 Pauli widths, and a Hamiltonian with no non-identity terms after simplification
@@ -54,6 +56,8 @@ qubit.
 
 Do not include a reference energy, ground state, optimized parameters, or an
 answer hidden under another field.
+
+[`examples/h2_2q.json`](examples/h2_2q.json) is a small format example.
 
 ## Run the research loop
 
@@ -88,31 +92,16 @@ The exact action schemas and lifecycle are in
 [docs/agent_protocol.md](docs/agent_protocol.md). The physics-oriented
 search guide is [docs/ansatz_playbook.md](docs/ansatz_playbook.md).
 
-## Clean Codex prompt
+## Give the problem to Codex
 
-Start Codex in a fresh clone or clean worktree containing only the public
-repository and your `user_problem/hamiltonian.json`, then give it this goal:
+Start Codex in a fresh clone or clean worktree after adding
+`user_problem/hamiltonian.json`. The repository's `AGENTS.md` supplies the
+research constraints; the goal can stay short:
 
 ```text
-Solve the Hamiltonian in user_problem/hamiltonian.json with AutoVQE's closed
-research loop. First read README.md, docs/agent_protocol.md, and
-docs/ansatz_playbook.md, then read the raw Hamiltonian and run `uv run
-autovqe inspect --json`.
-
-Treat user_problem/hamiltonian.json as immutable. During discovery, do not edit
-AutoVQE source, tests, or documentation, and do not read or edit
-controller-owned run files or event history. Read state through the CLI and
-write only action JSON under .autovqe-runtime/actions/. Route every probe, energy,
-optimization, and resource measurement through `uv run autovqe research ...`;
-do not import the evaluator or run another solver. Do not inspect bundled
-examples, prior run directories, or files outside this worktree for answers.
-
-Investigate falsifiable physical structures, preserve failed branches, and use
-only typed AnsatzSpec candidates. Do not supply energies, optimized values, or
-resource counts. Continue until the controller accepts positive_commit or a
-grounded negative_close. Report the final ansatz and optimized binding only
-from `research result`, and state that exact ground-state accuracy is unknown
-when no independent reference score was provided.
+Solve user_problem/hamiltonian.json with AutoVQE's closed research loop.
+Continue until the controller accepts a terminal decision, then report only
+the result returned by the CLI.
 ```
 
 ## What acceptance means

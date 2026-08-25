@@ -77,7 +77,7 @@ the phase trainable; never insert a fitted fixed angle.
 ## Discover and use symmetry
 
 Declared sector metadata suggests probes; it does not certify a conservation
-law. Propose an `exact_pauli_symmetry`, request the normalized-commutator probe,
+law. Request a normalized-commutator symmetry probe for a concrete generator,
 and cite only a supported probe ID.
 
 For U(1)-like particle-number or magnetization conservation, test the relevant
@@ -109,9 +109,9 @@ role. Useful sharing classes include:
 
 Allowed relative scales are `-2, -1, -0.5, 0.5, 1, 2`. Use them only for a
 clear sign, orientation, or multiplicity relation. If evidence shows a shared
-channel is too rigid, split one meaningful class at a time. Do not hide many
-independent values as fixed coefficients; every angle remains a zero-offset
-multiple of one declared trainable parameter.
+channel is too rigid, split one meaningful class at a time. Reusing the same
+parameter label expresses sharing; every angle remains a zero-offset multiple
+of that trainable parameter.
 
 ## Run a closed research cycle
 
@@ -119,7 +119,7 @@ For each branch:
 
 1. State a physical mechanism and a measurable prediction or falsifier.
 2. Submit the smallest typed candidate that isolates it.
-3. Run audit and inspect evaluator-owned resource or symmetry violations.
+3. Inspect the automatic evaluator-owned audit from candidate submission.
 4. Run smoke; distinguish invalid, objective-flat, and genuinely unfavorable
    results.
 5. Revise one structural assumption or retire the branch with its evidence.

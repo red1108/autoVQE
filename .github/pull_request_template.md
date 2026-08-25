@@ -10,15 +10,9 @@ Commands run:
 
 ```
 
-## Hamiltonian Evidence
+## Scientific evidence
 
-If this changes ansatz logic or fixtures, include:
+If this changes ansatz behavior, summarize the Hamiltonian facts used,
+evaluator-owned results, and unsupported regimes:
 
-- problem file:
-- Hamiltonian facts used:
-- evaluator energy:
-- independent post-run comparison, if available:
-- comparison metric:
-- ansatz family:
-- parameters:
-- two-qubit gates:
+-

@@ -6,8 +6,8 @@ from qiskit.circuit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 
 from autovqe import probes
-from autovqe.ansatz import OperationSpec, ParameterExpression
-from autovqe.problem import InitialStateSpec, PauliTerm, PublicProblem
+from autovqe.ansatz import OperationSpec
+from autovqe.problem import PauliTerm, PublicProblem
 
 
 def _problem() -> PublicProblem:
@@ -18,17 +18,15 @@ def _problem() -> PublicProblem:
             PauliTerm("XX", 0.25),
             PauliTerm("YY", 0.25),
         ),
-        initial_state=InitialStateSpec(
-            kind="computational_basis", occupation=(1, 0)
-        ),
+        initial_occupation=(1, 0),
     )
 
 
 def _exchange() -> OperationSpec:
     return OperationSpec(
-        macro="XYExchange",
+        gate="XYExchange",
         qubits=(0, 1),
-        parameters={"angle": ParameterExpression.parameter("theta")},
+        parameter="theta",
     )
 
 
@@ -50,12 +48,6 @@ class LeanPublicProbeTests(unittest.TestCase):
                 {"type": "initial_state_moments", "generator": request["generator"]},
             )
 
-    def test_orbit_recipe_alias_is_not_supported(self) -> None:
-        with self.assertRaisesRegex(probes.ProbeValidationError, "unsupported generator"):
-            probes.generator_from_recipe(
-                2, {"type": "orbit_pauli_sum", "seed": "Z"}
-            )
-
     def test_observables_must_be_finite_and_hermitian(self) -> None:
         with self.assertRaisesRegex(probes.ProbeValidationError, "finite"):
             probes.validate_hamiltonian_observable(
@@ -75,14 +67,17 @@ class LeanPublicProbeTests(unittest.TestCase):
                 index //= 4
             return "".join(letters)
 
-        hamiltonian = SparsePauliOp.from_list(
-            [(label(index + 1), 1.0) for index in range(1_245)]
+        problem = PublicProblem.create(
+            num_qubits=16,
+            pauli_terms=tuple(
+                PauliTerm(label(index + 1), 1.0) for index in range(1_245)
+            ),
         )
         request = {
             "type": "normalized_commutator",
             "generator": {"type": "global_pauli_sum", "pauli": "Z"},
         }
-        self.assertEqual(probes.algebraic_probe_cost_units(hamiltonian, request), 1.25)
+        self.assertEqual(probes.run_public_probe(problem, request).cost_units, 1.25)
 
 
 class LeanInternalEvidenceTests(unittest.TestCase):
@@ -123,12 +118,6 @@ class LeanInternalEvidenceTests(unittest.TestCase):
             probes.energy_from_circuit(
                 QuantumCircuit(1), SparsePauliOp.from_list([("Z", 1j)])
             )
-
-    def test_removed_dense_and_gradient_interfaces_stay_absent(self) -> None:
-        self.assertFalse(hasattr(probes, "unitary_commutation_residual"))
-        self.assertFalse(hasattr(probes, "gradient_snapshot"))
-        self.assertFalse(hasattr(probes, "run_algebraic_probe"))
-
 
 if __name__ == "__main__":
     unittest.main()

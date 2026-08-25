@@ -6,7 +6,6 @@ import json
 import math
 from collections import Counter
 from dataclasses import dataclass, fields, is_dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -32,18 +31,6 @@ def _finite(value: Any, field: str) -> float:
         raise ValueError(f"{field} must be finite")
     return 0.0 if result == 0.0 else result
 
-def _pairs(values: Sequence[tuple[str, Any]], field: str) -> tuple[tuple[str, Any], ...]:
-    result: dict[str, Any] = {}
-    for key, value in values:
-        if not isinstance(key, str) or not key or key in result:
-            raise ValueError(f"invalid or duplicate {field} key: {key!r}")
-        if isinstance(value, float):
-            value = _finite(value, f"{field}[{key!r}]")
-        elif not isinstance(value, (bool, int, str)):
-            raise TypeError(f"{field}[{key!r}] must be scalar")
-        result[key] = value
-    return tuple(sorted(result.items()))
-
 @dataclass(frozen=True)
 class PauliTerm:
     pauli: str
@@ -55,53 +42,6 @@ class PauliTerm:
             raise ValueError(f"invalid Pauli label: {self.pauli!r}")
         object.__setattr__(self, "real", _finite(self.real, "real"))
         object.__setattr__(self, "imag", _finite(self.imag, "imag"))
-
-@dataclass(frozen=True)
-class EncodingSpec:
-    name: str = "qubit_pauli"
-    mapping: str | None = None
-    qubit_order: str = "qiskit_little_endian"
-    spin_orbitals: int | None = None
-    active_orbitals: int | None = None
-    attributes: tuple[tuple[str, Any], ...] = ()
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name:
-            raise ValueError("encoding name must be non-empty")
-        if self.qubit_order != "qiskit_little_endian":
-            raise ValueError("qubit_order must be 'qiskit_little_endian'")
-        for name in ("spin_orbitals", "active_orbitals"):
-            value = getattr(self, name)
-            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
-                raise ValueError(f"{name} must be a positive integer")
-        object.__setattr__(self, "attributes", _pairs(self.attributes, "encoding attributes"))
-
-@dataclass(frozen=True)
-class SectorSpec:
-    symmetries: tuple[str, ...] = ()
-    values: tuple[tuple[str, Any], ...] = ()
-
-    def __post_init__(self) -> None:
-        symmetries = tuple(sorted(set(self.symmetries)))
-        if any(not isinstance(item, str) or not item for item in symmetries):
-            raise ValueError("sector symmetries must be non-empty strings")
-        object.__setattr__(self, "symmetries", symmetries)
-        object.__setattr__(self, "values", _pairs(self.values, "sector values"))
-
-@dataclass(frozen=True)
-class InitialStateSpec:
-    kind: str = "none"
-    occupation: tuple[int, ...] | None = None
-    source: str | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.kind, str) or not self.kind:
-            raise ValueError("initial-state kind must be non-empty")
-        if self.occupation is not None:
-            occupation = tuple(self.occupation)
-            if any(isinstance(bit, bool) or not isinstance(bit, int) or bit not in (0, 1) for bit in occupation):
-                raise ValueError("initial-state occupation must contain integer 0/1 bits")
-            object.__setattr__(self, "occupation", occupation)
 
 @dataclass(frozen=True)
 class BackendSpec:
@@ -128,10 +68,9 @@ class PublicProblem:
     problem_id: str
     num_qubits: int
     pauli_terms: tuple[PauliTerm, ...]
-    encoding: EncodingSpec
-    sector: SectorSpec
-    initial_state: InitialStateSpec
-    backend: BackendSpec
+    symmetry: tuple[tuple[str, Any], ...] = ()
+    initial_occupation: tuple[int, ...] | None = None
+    backend: BackendSpec = BackendSpec()
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -144,12 +83,22 @@ class PublicProblem:
             raise ValueError("non-empty Pauli terms must match num_qubits")
         if any(term.imag != 0.0 for term in terms):
             raise ValueError("Hamiltonian Pauli coefficients must be real")
-        occupation = self.initial_state.occupation
-        if occupation is not None and len(occupation) != self.num_qubits:
-            raise ValueError("initial-state occupation must match num_qubits")
+        occupation = self.initial_occupation
+        if occupation is not None and (
+            len(occupation) != self.num_qubits
+            or any(
+                isinstance(bit, bool)
+                or not isinstance(bit, int)
+                or bit not in (0, 1)
+                for bit in occupation
+            )
+        ):
+            raise ValueError("initial_occupation must contain one integer 0/1 bit per qubit")
         if any(max(edge) >= self.num_qubits for edge in self.backend.coupling_map):
             raise ValueError("coupling-map qubit is outside the problem")
         object.__setattr__(self, "pauli_terms", terms)
+        object.__setattr__(self, "symmetry", tuple(sorted(self.symmetry)))
+        object.__setattr__(self, "initial_occupation", None if occupation is None else tuple(occupation))
 
     @classmethod
     def create(
@@ -158,9 +107,8 @@ class PublicProblem:
         num_qubits: int,
         pauli_terms: Sequence[PauliTerm],
         problem_id: str = "problem",
-        encoding: EncodingSpec | None = None,
-        sector: SectorSpec | None = None,
-        initial_state: InitialStateSpec | None = None,
+        symmetry: Mapping[str, Any] | None = None,
+        initial_occupation: Sequence[int] | None = None,
         backend: BackendSpec | None = None,
         schema_version: str = SCHEMA_VERSION,
     ) -> PublicProblem:
@@ -168,9 +116,8 @@ class PublicProblem:
             problem_id,
             num_qubits,
             tuple(pauli_terms),
-            encoding or EncodingSpec(),
-            sector or SectorSpec(),
-            initial_state or InitialStateSpec(),
+            tuple((symmetry or {}).items()),
+            None if initial_occupation is None else tuple(initial_occupation),
             backend or BackendSpec(),
             schema_version,
         )
@@ -180,29 +127,17 @@ def canonical_data(value: Any) -> Any:
 
     if is_dataclass(value) and not isinstance(value, type):
         return {field.name: canonical_data(getattr(value, field.name)) for field in fields(value)}
-    if isinstance(value, Enum):
-        return canonical_data(value.value)
-    if isinstance(value, Path):
-        return str(value)
     if isinstance(value, Mapping):
         if any(not isinstance(key, str) for key in value):
             raise TypeError("canonical JSON mappings require string keys")
         return {key: canonical_data(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [canonical_data(item) for item in value]
-    if isinstance(value, (set, frozenset)):
-        items = [canonical_data(item) for item in value]
-        return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
-    if isinstance(value, complex):
-        return {"real": _finite(value.real, "complex.real"), "imag": _finite(value.imag, "complex.imag")}
     if isinstance(value, float):
         return _finite(value, "float")
     if value is None or isinstance(value, (bool, int, str)):
         return value
     raise TypeError(f"unsupported canonical JSON value: {type(value).__name__}")
-
-def canonical_json(value: Any) -> str:
-    return json.dumps(canonical_data(value), ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
@@ -212,20 +147,27 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result[key] = value
     return result
 
-def _read(path: Path) -> dict[str, Any]:
+def decode_json_object(text: str, source: str | Path = "JSON") -> dict[str, Any]:
     try:
         value = json.loads(
-            path.read_text(encoding="utf-8-sig"),
+            text,
             object_pairs_hook=_unique_object,
             parse_constant=lambda value: (_ for _ in ()).throw(
                 ValueError(f"non-finite JSON number is not allowed: {value}")
             ),
         )
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"cannot read problem {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON in {source}: {exc}") from exc
     if not isinstance(value, dict):
-        raise ValueError(f"{path} must contain one JSON object")
+        raise ValueError(f"{source} must contain one JSON object")
     return value
+
+
+def _read(path: Path) -> dict[str, Any]:
+    try:
+        return decode_json_object(path.read_text(encoding="utf-8-sig"), path)
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"cannot read problem {path}: {exc}") from exc
 
 def _text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
@@ -324,34 +266,12 @@ def load_problem_document(path: str | Path = DEFAULT_PROBLEM_PATH) -> tuple[Publ
     ):
         raise ValueError(f"initial_state_hint must be a {width}-item integer 0/1 list")
 
-    attributes = tuple((key, metadata[key]) for key in ("basis", "orbital_order", "spin_order") if key in metadata)
-    sector_values: dict[str, Any] = {}
-    for source_key, target in (
-        ("active_electrons", "particle_number"),
-        ("particle_number", "particle_number"),
-        ("magnetization", "magnetization"),
-        ("spin_projection", "spin_projection"),
-        ("total_spin", "total_spin"),
-        ("parity", "parity"),
-    ):
-        if source_key in metadata:
-            sector_values.setdefault(target, metadata[source_key])
     problem = PublicProblem.create(
         problem_id=name,
         num_qubits=width,
         pauli_terms=terms,
-        encoding=EncodingSpec(
-            mapping=metadata.get("mapping"),
-            spin_orbitals=metadata.get("spin_orbitals"),
-            active_orbitals=metadata.get("active_orbitals"),
-            attributes=attributes,
-        ),
-        sector=SectorSpec(tuple(sector_values), tuple(sector_values.items())),
-        initial_state=InitialStateSpec(
-            "computational_basis" if has_hint else "none",
-            tuple(hint) if has_hint else None,
-            "initial_state_hint" if has_hint else None,
-        ),
+        symmetry=metadata,
+        initial_occupation=tuple(hint) if has_hint else None,
         backend=BackendSpec(tuple(basis), tuple(tuple(edge) for edge in coupling)),
     )
     document = canonical_data(raw)
@@ -381,9 +301,8 @@ class StructuralObservation:
 class ProblemObservation:
     problem_id: str
     num_qubits: int
-    encoding: EncodingSpec
-    sector: SectorSpec
-    initial_state: InitialStateSpec
+    symmetry: tuple[tuple[str, Any], ...]
+    initial_occupation: tuple[int, ...] | None
     backend: BackendSpec
     structure: StructuralObservation
     schema_version: str = SCHEMA_VERSION
@@ -433,16 +352,8 @@ def observe_problem(problem: PublicProblem) -> ProblemObservation:
     return ProblemObservation(
         problem.problem_id,
         problem.num_qubits,
-        problem.encoding,
-        problem.sector,
-        problem.initial_state,
+        problem.symmetry,
+        problem.initial_occupation,
         problem.backend,
         structure,
     )
-
-__all__ = [
-    "BackendSpec", "EncodingSpec", "InitialStateSpec", "PauliTerm",
-    "ProblemObservation", "PublicProblem", "SectorSpec", "StructuralObservation",
-    "canonical_data", "canonical_json", "hamiltonian_from_problem",
-    "load_problem", "load_problem_document", "observe_problem",
-]

@@ -37,7 +37,6 @@ and conserved sectors.
 Run these before opening a pull request:
 
 ```bash
-uv run python -m compileall -q autovqe tests
 uv run python -m unittest discover -s tests -v
 uv run autovqe check
 git diff --check
@@ -57,26 +56,15 @@ as optional calibration inputs when the change affects that physical regime.
 - Keep the public variational allowlist at `PauliRotation`, `XYExchange`, and
   `IsotropicExchange` unless a separately justified protocol change is made.
 - Require supported exact-symmetry evidence and per-operation preservation for
-  both exchange macros.
-- Keep optimizer policy and reported measurements outside candidate metadata.
+  both exchange gates.
+- Keep optimizer policy and reported measurements outside candidate actions.
 - Count parameter occurrences as well as unique parameter names.
 - Check resource use at deterministic nonzero audit bindings when simplification
   could hide cost.
 - Preserve failed and retired research branches.
-- Keep public actions minimal: the controller derives probe/evaluation IDs,
-  evaluation stages, and terminal evidence.
+- Keep public actions minimal: the controller derives evaluation IDs, stages,
+  and terminal evidence.
 - Prefer one measured policy change over a broad circuit rewrite.
-
-## Pull request notes
-
-Include:
-
-- the scientific or workflow problem being addressed;
-- the observable rule used by the implementation;
-- affected action, candidate, or evaluation behavior;
-- evaluator-derived energy and resource results when relevant;
-- tests run;
-- limitations and unsupported regimes.
 
 Keep supplied problems under `user_problem/` and action scratch files under
 `.autovqe-runtime/`; both are ignored by Git. Do not commit generated run

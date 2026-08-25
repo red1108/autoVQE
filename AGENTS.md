@@ -14,17 +14,19 @@ user directs.
   `uv run autovqe research ...`. Do not import the evaluator directly, run a
   separate eigensolver/optimizer, or edit controller-owned evidence to bypass
   the closed research loop and its budget.
-- Read the README research workflow, evaluator-owned evidence rules, action
-  protocol, and ansatz playbook before choosing a strategy.
+- Read the raw Hamiltonian, README workflow, action protocol, and ansatz
+  playbook before choosing a strategy. Base hypotheses on visible terms,
+  coefficients, locality, graph structure, the initial occupation, and any
+  symmetry that you independently probe.
 - Express every proposed variational circuit as a typed `AnsatzSpec`. Do not
   submit candidate-authored energy, optimized values, parameter counts, gate
   counts, depth, custom operations, or hidden numeric answers.
-- Treat hypotheses as falsifiable branches. Use the available physical probes
-  and the fixed audit, smoke, and promotion stages. Preserve failed and retired
-  branches so later decisions retain their evidence. Bring a candidate from a
-  different primary `ansatz_structure` root through smoke before requesting
-  promotion; a symmetry hypothesis or cosmetic family duplicate is not a
-  comparator.
+- Treat structure hypotheses as falsifiable branches. Candidate submission
+  runs the fixed audit automatically; survivors advance through smoke and
+  promotion. Preserve failed and retired branches so later decisions retain
+  their evidence. Bring a candidate from a different primary structure root
+  through smoke before requesting promotion; a symmetry probe or cosmetic
+  family duplicate is not a comparator.
 - Cite supported symmetry probe IDs separately from the candidate's primary
   structural hypothesis. Use symmetry-preserving gates only after a relevant,
   non-spectator conserved quantity is established and the candidate passes

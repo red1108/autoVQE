@@ -10,7 +10,7 @@ import numpy as np
 from qiskit.circuit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp, Statevector
 
-from .ansatz import OperationSpec
+from .ansatz import OperationSpec, operation_paulis, pauli_label
 from .problem import PublicProblem, hamiltonian_from_problem
 
 EXACT_SYMMETRY_TOLERANCE = 1e-10
@@ -21,6 +21,7 @@ MAX_GENERATOR_TERMS = 256
 MAX_GENERATOR_COEFFICIENT = 1e6
 MAX_COMMUTATOR_TERM_PRODUCTS = 65_536
 PROBE_COST_TERM_BLOCK = 4_096
+EXPECTATION_IMAGINARY_TOLERANCE = 1e-10
 
 
 class ProbeValidationError(ValueError):
@@ -41,7 +42,7 @@ class ProbeResult:
 
 def initial_state_circuit(problem: PublicProblem) -> QuantumCircuit:
     circuit = QuantumCircuit(problem.num_qubits)
-    for qubit, bit in enumerate(problem.initial_state.occupation or ()):
+    for qubit, bit in enumerate(problem.initial_occupation or ()):
         if bit:
             circuit.x(qubit)
     return circuit
@@ -77,55 +78,67 @@ def validate_hamiltonian_observable(hamiltonian: SparsePauliOp) -> SparsePauliOp
     return _finite_hermitian(hamiltonian, "Hamiltonian")
 
 
-def validate_generator_observable(
+def _validated_generator(
     generator: SparsePauliOp, *, min_norm: float = MIN_GENERATOR_NORM
-) -> float:
+) -> tuple[SparsePauliOp, float]:
     if not math.isfinite(float(min_norm)) or min_norm <= 0.0:
         raise ValueError("min_norm must be finite and positive")
-    active_norm = _coefficient_norm(_center_operator(_finite_hermitian(generator, "generator")))
+    generator = _finite_hermitian(generator, "generator")
+    active_norm = _coefficient_norm(_center_operator(generator))
     if not math.isfinite(active_norm):
         raise ProbeValidationError("generator norm must be finite")
     if active_norm < min_norm:
         raise ProbeValidationError(
             f"generator is identity-only, zero, or below the minimum active norm {min_norm:g}"
         )
-    return active_norm
+    return generator, active_norm
 
 
-def _check_term_product_cap(hamiltonian: SparsePauliOp, generator: SparsePauliOp) -> int:
-    products = len(hamiltonian.paulis) * len(generator.simplify(atol=1e-14).paulis)
+def validate_generator_observable(
+    generator: SparsePauliOp, *, min_norm: float = MIN_GENERATOR_NORM
+) -> float:
+    return _validated_generator(generator, min_norm=min_norm)[1]
+
+
+def _commutator_context(
+    hamiltonian: SparsePauliOp, generator: SparsePauliOp
+) -> tuple[SparsePauliOp, float, float, int]:
+    generator, q_norm = _validated_generator(generator)
+    if hamiltonian.num_qubits != generator.num_qubits:
+        raise ProbeValidationError("Hamiltonian and generator qubit counts differ")
+    h_norm = _coefficient_norm(_center_operator(hamiltonian))
+    if h_norm <= 1e-14:
+        raise ProbeValidationError("Hamiltonian has no non-identity component")
+    products = len(hamiltonian.paulis) * len(generator.paulis)
     if products > MAX_COMMUTATOR_TERM_PRODUCTS:
         raise ProbeValidationError(
             f"commutator probe exceeds the {MAX_COMMUTATOR_TERM_PRODUCTS}-term-product cap"
         )
-    return products
+    return generator, h_norm, q_norm, products
 
 
-def normalized_commutator(hamiltonian: SparsePauliOp, generator: SparsePauliOp) -> float:
-    """Scale-invariant Pauli-coefficient norm of ``[H, Q]``."""
-    hamiltonian = validate_hamiltonian_observable(hamiltonian)
-    if hamiltonian.num_qubits != generator.num_qubits:
-        raise ProbeValidationError("Hamiltonian and generator qubit counts differ")
-    q_norm = validate_generator_observable(generator)
-    h_norm = _coefficient_norm(_center_operator(hamiltonian))
-    if h_norm <= 1e-14:
-        raise ProbeValidationError("Hamiltonian has no non-identity component")
-    generator = generator.simplify(atol=1e-14)
-    _check_term_product_cap(hamiltonian, generator)
+def _commutator_residual(
+    hamiltonian: SparsePauliOp,
+    generator: SparsePauliOp,
+    h_norm: float,
+    q_norm: float,
+) -> float:
     commutator = (
         hamiltonian.compose(generator) - generator.compose(hamiltonian)
     ).simplify(atol=1e-14)
     return _coefficient_norm(commutator) / (2.0 * h_norm * q_norm)
 
 
-def distance_from_hamiltonian_span(
+def normalized_commutator(hamiltonian: SparsePauliOp, generator: SparsePauliOp) -> float:
+    """Scale-invariant Pauli-coefficient norm of ``[H, Q]``."""
+    hamiltonian = validate_hamiltonian_observable(hamiltonian)
+    generator, h_norm, q_norm, _ = _commutator_context(hamiltonian, generator)
+    return _commutator_residual(hamiltonian, generator, h_norm, q_norm)
+
+
+def _distance_from_hamiltonian_span(
     hamiltonian: SparsePauliOp, generator: SparsePauliOp
 ) -> float:
-    """Relative distance of ``Q`` from the span of ``I`` and ``H``."""
-    hamiltonian = validate_hamiltonian_observable(hamiltonian)
-    validate_generator_observable(generator)
-    if hamiltonian.num_qubits != generator.num_qubits:
-        raise ProbeValidationError("Hamiltonian and generator qubit counts differ")
     centered_h = _center_operator(hamiltonian)
     centered_q = _center_operator(generator.simplify(atol=1e-14))
     h_map = dict(zip(centered_h.paulis.to_labels(), centered_h.coeffs, strict=True))
@@ -138,16 +151,6 @@ def distance_from_hamiltonian_span(
         return 1.0
     projection = np.vdot(h_vector, q_vector) / h_squared
     return float(np.linalg.norm(q_vector - projection * h_vector) / np.linalg.norm(q_vector))
-
-
-def validate_symmetry_generator(
-    hamiltonian: SparsePauliOp,
-    generator: SparsePauliOp,
-    *,
-    min_hamiltonian_span_distance: float = 1e-6,
-) -> None:
-    if distance_from_hamiltonian_span(hamiltonian, generator) < min_hamiltonian_span_distance:
-        raise ProbeValidationError("generator is a trivial copy of the Hamiltonian")
 
 
 def _explicit_pauli_sum(num_qubits: int, recipe: Mapping[str, Any]) -> SparsePauliOp:
@@ -197,11 +200,10 @@ def _global_pauli_sum(num_qubits: int, recipe: Mapping[str, Any]) -> SparsePauli
         raise ProbeValidationError("global Pauli sum requires pauli X, Y, or Z")
     if recipe.get("selector", "all_sites") != "all_sites":
         raise ProbeValidationError("global Pauli sum only supports selector=all_sites")
-    terms = []
-    for qubit in range(num_qubits):
-        label = ["I"] * num_qubits
-        label[num_qubits - qubit - 1] = str(pauli)
-        terms.append(("".join(label), 1.0))
+    terms = [
+        (pauli_label(num_qubits, (qubit,), str(pauli)), 1.0)
+        for qubit in range(num_qubits)
+    ]
     return SparsePauliOp.from_list(terms).simplify(atol=1e-14)
 
 
@@ -215,9 +217,8 @@ def generator_from_recipe(num_qubits: int, recipe: Mapping[str, Any]) -> SparseP
     raise ProbeValidationError(f"unsupported generator recipe type: {recipe.get('type')!r}")
 
 
-def _probe_inputs_and_cost(
-    hamiltonian: SparsePauliOp, request: Mapping[str, Any]
-) -> tuple[SparsePauliOp, SparsePauliOp, float]:
+def run_public_probe(problem: PublicProblem, request: Mapping[str, Any]) -> ProbeResult:
+    """Run the sole public probe: an evaluator-owned normalized commutator."""
     if set(request) != {"type", "generator"}:
         raise ProbeValidationError("probe fields must be exactly type and generator")
     if request.get("type") != "normalized_commutator":
@@ -225,54 +226,31 @@ def _probe_inputs_and_cost(
     recipe = request.get("generator")
     if not isinstance(recipe, Mapping):
         raise ProbeValidationError("probe requires a generator recipe")
-    hamiltonian = validate_hamiltonian_observable(hamiltonian)
+    hamiltonian = validate_hamiltonian_observable(hamiltonian_from_problem(problem))
     generator = generator_from_recipe(hamiltonian.num_qubits, recipe)
-    validate_generator_observable(generator)
-    products = _check_term_product_cap(hamiltonian, generator)
-    return hamiltonian, generator, round(0.25 * max(1, math.ceil(products / PROBE_COST_TERM_BLOCK)), 10)
-
-
-def algebraic_probe_cost_units(
-    hamiltonian: SparsePauliOp, request: Mapping[str, Any]
-) -> float:
-    return _probe_inputs_and_cost(hamiltonian, request)[2]
-
-
-def run_public_probe(problem: PublicProblem, request: Mapping[str, Any]) -> ProbeResult:
-    """Run the sole public probe: an evaluator-owned normalized commutator."""
-    hamiltonian, generator, cost = _probe_inputs_and_cost(
-        hamiltonian_from_problem(problem), request
-    )
-    validate_symmetry_generator(hamiltonian, generator)
-    residual = normalized_commutator(hamiltonian, generator)
+    generator, h_norm, q_norm, products = _commutator_context(hamiltonian, generator)
+    distance = _distance_from_hamiltonian_span(hamiltonian, generator)
+    if distance < 1e-6:
+        raise ProbeValidationError("generator is a trivial copy of the Hamiltonian")
+    residual = _commutator_residual(hamiltonian, generator, h_norm, q_norm)
     return ProbeResult(
         "normalized_commutator",
         {
             "residual": residual,
             "exact": residual <= EXACT_SYMMETRY_TOLERANCE,
-            "hamiltonian_span_distance": distance_from_hamiltonian_span(
-                hamiltonian, generator
-            ),
+            "hamiltonian_span_distance": distance,
         },
-        cost,
+        round(0.25 * max(1, math.ceil(products / PROBE_COST_TERM_BLOCK)), 10),
     )
 
 
-def _statevector(initial_state: QuantumCircuit | Statevector | np.ndarray) -> Statevector:
-    if isinstance(initial_state, Statevector):
-        return initial_state
-    if isinstance(initial_state, QuantumCircuit):
-        if initial_state.parameters:
-            raise ProbeValidationError("initial-state circuit must be fully bound")
-        return Statevector.from_instruction(initial_state)
-    return Statevector(np.asarray(initial_state, dtype=complex))
-
-
 def initial_state_moments(
-    initial_state: QuantumCircuit | Statevector | np.ndarray, generator: SparsePauliOp
+    initial_state: QuantumCircuit, generator: SparsePauliOp
 ) -> tuple[float, float]:
     """Measure internal sector evidence for a trusted charge."""
-    state = _statevector(initial_state)
+    if initial_state.parameters:
+        raise ProbeValidationError("initial-state circuit must be fully bound")
+    state = Statevector.from_instruction(initial_state)
     if state.num_qubits != generator.num_qubits:
         raise ProbeValidationError("initial state and generator qubit counts differ")
     active_norm = validate_generator_observable(generator)
@@ -282,30 +260,15 @@ def initial_state_moments(
     return float(np.real(mean)), max(0.0, variance) / (active_norm * active_norm)
 
 
-def _full_pauli_label(num_qubits: int, qubits: Sequence[int], pauli: str) -> str:
-    if len(qubits) != len(pauli):
-        raise ProbeValidationError("Pauli word and support lengths differ")
-    label = ["I"] * num_qubits
-    for qubit, letter in zip(qubits, pauli, strict=True):
-        if not 0 <= qubit < num_qubits:
-            raise ProbeValidationError("operation support is outside the register")
-        label[num_qubits - qubit - 1] = letter
-    return "".join(label)
-
-
 def operation_generator(num_qubits: int, operation: OperationSpec) -> SparsePauliOp:
-    if operation.macro == "PauliRotation":
-        word = _full_pauli_label(num_qubits, operation.qubits, str(operation.options["pauli"]))
-        return SparsePauliOp.from_list([(word, 1.0)])
-    if operation.macro in {"XYExchange", "IsotropicExchange"}:
+    try:
         terms = [
-            (_full_pauli_label(num_qubits, operation.qubits, "XX"), 1.0),
-            (_full_pauli_label(num_qubits, operation.qubits, "YY"), 1.0),
+            (pauli_label(num_qubits, operation.qubits, word), coefficient)
+            for word, coefficient in operation_paulis(operation)
         ]
-        if operation.macro == "IsotropicExchange":
-            terms.append((_full_pauli_label(num_qubits, operation.qubits, "ZZ"), 1.0))
-        return SparsePauliOp.from_list(terms).simplify(atol=1e-14)
-    raise ProbeValidationError(f"unsupported trusted operation macro: {operation.macro}")
+    except ValueError as exc:
+        raise ProbeValidationError(str(exc)) from exc
+    return SparsePauliOp.from_list(terms).simplify(atol=1e-14)
 
 
 def operation_symmetry_residuals(
@@ -393,11 +356,19 @@ def validate_special_operation_relevance(
     return touching_norm, fraction, residual, conditioned_residual, conditioned_variance
 
 
+def _expectation_energy(circuit: QuantumCircuit, hamiltonian: SparsePauliOp) -> float:
+    value = complex(Statevector.from_instruction(circuit).expectation_value(hamiltonian))
+    if not math.isfinite(value.real) or not math.isfinite(value.imag):
+        raise ProbeValidationError("expectation value must be finite")
+    if abs(value.imag) > EXPECTATION_IMAGINARY_TOLERANCE * max(1.0, abs(value.real)):
+        raise ProbeValidationError("Hermitian Hamiltonian produced a complex expectation")
+    return float(value.real)
+
+
 def energy_from_circuit(circuit: QuantumCircuit, hamiltonian: SparsePauliOp) -> float:
     if circuit.parameters:
         raise ProbeValidationError("energy probe requires a fully bound circuit")
     hamiltonian = validate_hamiltonian_observable(hamiltonian)
     if circuit.num_qubits != hamiltonian.num_qubits:
         raise ProbeValidationError("circuit and Hamiltonian qubit counts differ")
-    state = Statevector.from_instruction(circuit)
-    return float(np.real(state.expectation_value(hamiltonian)))
+    return _expectation_energy(circuit, hamiltonian)

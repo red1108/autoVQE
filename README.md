@@ -4,8 +4,10 @@ AutoVQE lets a research agent discover and optimize a useful VQE ansatz for a
 given Pauli Hamiltonian. The agent reads the problem, edits one transparent
 circuit, runs a fixed-time experiment, learns from the result, and repeats.
 
-The repository deliberately has only two Python files:
+The repository is intentionally compact. Its main files are:
 
+- `program.md` defines the research loop, physical guidance, and anti-cheating
+  boundary.
 - `ansatz.py` is the agent's laboratory notebook and the only code it edits.
 - `evaluate.py` is the fixed experiment: optimization, energy, and transparent
   transpiled resource accounting.

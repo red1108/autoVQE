@@ -1,5 +1,5 @@
 {
-  "name": "heisenberg_graph_9q",
+  "name": "heisenberg_9q_weighted_3x3_grid",
   "pauli_terms": [
     { "pauli": "IIZIIZIII", "coeff": 0.2730891596470493 },
     { "pauli": "IIYIIYIII", "coeff": 0.2730891596470493 },

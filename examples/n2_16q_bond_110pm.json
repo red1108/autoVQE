@@ -1,5 +1,5 @@
 {
-  "name": "n2_16q",
+  "name": "n2_16q_bond_110pm",
   "pauli_terms": [
     {"pauli": "IIIIIIIIIIIIIIII","coeff": -60.899791578495986},
     {"pauli": "IIIIIIIIIIIIIIIZ","coeff": 10.408030426924643},

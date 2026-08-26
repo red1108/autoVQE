@@ -18,7 +18,7 @@ Install Python 3.10+ and [`uv`](https://docs.astral.sh/uv/), then:
 
 ```bash
 uv sync
-uv run python evaluate.py examples/h2_4q_0p70a.json --seconds 30
+uv run python evaluate.py examples/h2_4q_bond_70pm.json --seconds 30
 ```
 
 `--seconds` is the optimization budget for each ansatz comparison. Keep it the
@@ -26,7 +26,7 @@ same while comparing candidates. If a problem contains `reference_energy`, the
 optional target is a relative energy error (0.1% by default):
 
 ```bash
-uv run python evaluate.py examples/n2_16q.json --seconds 300 \
+uv run python evaluate.py examples/n2_16q_bond_110pm.json --seconds 300 \
   --target-relative-error 0.001
 ```
 
@@ -39,7 +39,7 @@ Start a fresh Codex task in this repository and give it a problem path, a
 per-experiment budget, and a total research budget. For example:
 
 ```text
-Read program.md and optimize examples/h2_4q_0p70a.json. Use 30 seconds for
+Read program.md and optimize examples/h2_4q_bond_70pm.json. Use 30 seconds for
 every comparison and spend at most 30 minutes on the whole search. Leave the
 best verified ansatz in ansatz.py and report its final evaluator output.
 ```

@@ -1,8 +1,9 @@
 # AutoVQE
 
-AutoVQE lets a research agent discover and optimize a useful VQE ansatz for a
-given Pauli Hamiltonian. The agent reads the problem, edits one transparent
-circuit, runs a fixed-time experiment, learns from the result, and repeats.
+AutoVQE is inspired by Andrej Karpathy's
+[autoresearch](https://github.com/karpathy/autoresearch), adapting its compact,
+fixed-budget research loop to VQE ansatz discovery. Given a Pauli Hamiltonian,
+an agent edits one transparent circuit, runs an experiment, learns, and repeats.
 
 The repository is intentionally compact. Its main files are:
 
@@ -12,7 +13,8 @@ The repository is intentionally compact. Its main files are:
 - `evaluate.py` is the fixed experiment: optimization, energy, and transparent
   transpiled resource accounting.
 
-The eight Hamiltonians in `examples/` are demonstrations, not hidden answers.
+`examples/` contains Hamiltonians used in our experiments, which you can also
+run yourself.
 
 ## Quick start
 

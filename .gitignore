@@ -1,28 +1,5 @@
-# Python environments and caches
-/.venv/
-**/__pycache__/
+.venv/
+__pycache__/
 *.py[cod]
-/.python-version
-/.pytest_cache/
-/.ruff_cache/
-/.mypy_cache/
-/.coverage
-/htmlcov/
-*.egg-info/
-/build/
-/dist/
-
-# Local AutoVQE runs
-/.autovqe-runtime/
-/solve_runs/
-
-# Local environment files
-/.env
-/.env.*
-!/.env.example
-
-# Personal Codex configuration
-/.codex/
-
-# Operating-system files
-.DS_Store
+.env
+results.tsv

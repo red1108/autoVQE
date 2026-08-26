@@ -1,289 +1,52 @@
 # AutoVQE research program
 
-Turn the Hamiltonian at the exact path supplied by the user into an
-evidence-backed variational ansatz through AutoVQE's closed research loop.
-Read the raw Hamiltonian before choosing a model. The agent proposes
-hypotheses, probes, and typed circuits; the evaluator alone supplies energies,
-optimized values, and resource counts.
-These rules apply to Hamiltonian analysis and ansatz discovery; ordinary
-maintenance may edit the implementation as the user directs.
+Find the best useful VQE ansatz for the Hamiltonian named by the user. Work as
+one closed research loop:
 
-## Ownership and workflow
+`understand -> propose -> optimize -> compare -> learn -> keep or discard`
 
-For each run, use only the Hamiltonian path named in the user prompt. If none
-is supplied, request one; do not guess, search for, copy, or rename another
-input. Treat that file as immutable and do not add a reference energy or state.
-During discovery, do not modify AutoVQE source, tests, or documentation.
-Manually write only action JSON under `.autovqe-runtime/actions/`, apply it with
-`uv run autovqe research step`, and read controller state with
-`uv run autovqe research status`.
+Energy is the primary objective. When energies are effectively tied, the
+physically simpler circuit wins. Once growth stops helping or the target is
+reached, spend the remaining research effort removing operations, reducing
+depth, and testing parameter sharing without losing the energy.
 
-The controller snapshots the problem at `research init` and does not reread
-the original input during that run. The CLI owns run history and evidence.
-Request `uv run autovqe research result` only after a terminal decision; it is
-the sole source for the optimized parameter binding.
+## Boundary
 
-Action JSON is strict: every unlisted field is rejected. Route every probe,
-energy, optimization, and resource measurement through
-`uv run autovqe research ...`. Do not import the evaluator directly, run
-another eigensolver or optimizer, edit controller-owned evidence, bypass the
-budget, or look up a reference solution. Report a harness defect instead of
-patching around it during a discovery run.
+During a solve, edit only `ansatz.py` as code; `results.tsv` may hold local
+notes. Treat `evaluate.py` and the problem file as immutable. Never run an
+eigensolver, search for a known answer, insert optimized constants, or encode
+a solution in the input, initial state, or fixed gates. The evaluator is the
+only source of energies and optimized parameters.
 
-## Read the Hamiltonian
+The ansatz consists only of typed Pauli rotations. They are always decomposed
+to the problem's native gate set. A many-qubit rotation is therefore charged
+for its full support, depth, and two-qubit gates; it is not a one-gate or
+one-parameter shortcut. Do not judge simplicity from unique parameter count
+alone. Use all reported costs: parameter occurrences, generator support,
+two-qubit gates, total gates, and depth.
 
-Qiskit little-endian ordering is used: the rightmost Pauli letter acts on
-qubit 0. Separate the identity coefficient from the active Hamiltonian; the
-constant shifts every energy but does not select an ansatz. Inspect the raw
-terms and use `uv run autovqe inspect --problem PATH --json` for mechanical
-graph facts. Summarize:
+## Loop
 
-- active term count, coefficient magnitudes and signs, and locality;
-- X-, Y-, and Z-bearing terms and repeated coefficient classes;
-- connected components, degrees, boundaries, hubs, and repeated graph motifs;
-- higher-locality supports that may represent excitation channels;
-- the initial occupation and backend connectivity.
+1. Read the raw Hamiltonian. Inspect coefficients, locality, interaction
+   graph, initial occupation, repeated structure, and plausible conserved
+   quantities. Symmetry is one useful clue, not the whole ansatz.
+2. Run the empty or current ansatz once to establish the baseline.
+3. State one falsifiable structural idea. Change `ansatz.py` in one coherent
+   way: add, remove, reorder, split, or share rotations, or change optimizer.
+4. Run `evaluate.py` with the same per-experiment time budget. Record the
+   hypothesis, energy, and resources in `results.tsv`.
+5. Keep a change that improves energy. For an energy tie, keep it only when it
+   makes the native circuit meaningfully simpler. Otherwise revert it.
+6. Use failures to choose the next idea; do not blindly enumerate circuits.
+   Periodically challenge the current best with a genuinely different
+   structure, then simplify the winner.
+7. Finish with the best ansatz in `ansatz.py` and rerun it once for the final
+   report.
 
-Problem names and declared symmetry metadata are context, not evidence.
-
-## Build falsifiable structure branches
-
-Every circuit belongs to a primary structural hypothesis with a prediction or
-falsifier:
-
-```json
-{
-  "type": "propose_hypothesis",
-  "hypothesis_id": "boundary-hva",
-  "family": "boundary-aware HVA",
-  "prediction": "beats a disjoint-matching branch at smoke"
-}
-```
-
-Start with the smallest circuit that tests a physical claim. Bring at least
-two genuinely different primary structures through smoke; different depths,
-parameter names, symmetry probes, or orderings inside one lineage do not make
-a fair comparator.
-
-Useful structures include:
-
-- **Matchings and dimers:** test dominant exchange-like bonds in parallel,
-  then add a shifted covering or boundary/bulk split only if evidence supports
-  it.
-- **Boundary-aware layers:** distinguish endpoints, bulk sites, hubs, or leaves
-  before assigning a separate parameter to every operation.
-- **Hamiltonian variational layers:** order selected noncommuting cost and
-  mixer groups, ranked by coefficient, support, connectivity, and action on
-  the initial occupation; one shallow layer should earn more terms or depth.
-- **Phase-conditioned excitations:** an odd-Y channel may be objective-flat
-  because of phase alignment. Test a preregistered ordering with a trainable
-  one-local noncommuting phase rotation. Placement before versus after the
-  excitation is part of the hypothesis. Never use a fitted fixed angle.
-
-After all live candidates under a hypothesis are terminal, revise one
-structural assumption:
-
-```json
-{
-  "type": "revise_hypothesis",
-  "source_id": "boundary-hva",
-  "new_id": "boundary-hva-ordered",
-  "family": "boundary-aware ordered HVA",
-  "reason": "the first ordering was objective-active but unfavorable",
-  "falsifier": "the reordered layer gives no smoke improvement"
-}
-```
-
-A revision remains in its original lineage. Normalized duplicate family names
-and semantically equivalent candidates are rejected.
-
-## Discover symmetry instead of assuming it
-
-Request a normalized-commutator probe for a concrete generator:
-
-```json
-{
-  "type": "request_symmetry_probe",
-  "probe_id": "global-z",
-  "generator": {"type": "global_pauli_sum", "pauli": "Z"}
-}
-```
-
-`global_pauli_sum` permits X, Y, or Z and the optional
-`"selector":"all_sites"`. An explicit generator
-uses `{"type":"pauli_sum","terms":[...]}`, where each term contains a
-full-width `pauli` and optional finite `coeff`. Generators are bounded to 256
-distinct terms and coefficient magnitude `1e6`; zero, identity-only, and
-near-Hamiltonian copies are rejected.
-
-For U(1)-like particle-number or magnetization conservation, test the relevant
-global Z sum or an explicit weighted charge. For SU(2)-like isotropy, probe
-global X, Y, and Z separately: one commuting component proves only that
-component.
-
-Symmetry is a search constraint, not the ansatz. Continue using coefficients,
-graph motifs, locality, occupation, and connectivity to select operations and
-ordering. Cite only supported probe IDs. Every candidate operation must
-preserve every cited charge, the initial state must occupy a definite sector,
-and every conservation-specific gate must touch a relevant, non-spectator
-part of a cited charge.
-
-## Express circuits as `AnsatzSpec`
-
-An ansatz contains only `version`, `num_qubits`, and `operations`. Each
-operation is driven by one named parameter:
-
-```json
-{
-  "version": 1,
-  "num_qubits": 4,
-  "operations": [
-    {
-      "gate": "PauliRotation",
-      "qubits": [0, 1],
-      "parameter": "theta",
-      "scale": 0.5,
-      "pauli": "XY"
-    },
-    {
-      "gate": "XYExchange",
-      "qubits": [2, 3],
-      "parameter": "phi"
-    }
-  ]
-}
-```
-
-`version` defaults to 1, `operations` to an empty list, and `scale` to 1.
-Research candidates need at least one operation and parameter. Parameter names
-match `[A-Za-z_][A-Za-z0-9_.-]{0,127}`. Reusing a name means intentional
-sharing. Allowed scales are `-2, -1, -0.5, 0.5, 1, 2`.
-
-The gate allowlist is exactly:
-
-| Gate | Generator | Constraint |
-|---|---|---|
-| `PauliRotation` | `exp(-i angle P)` | `pauli` matches the listed qubits |
-| `XYExchange` | `exp[-i angle(XX+YY)]` | two qubits, no `pauli` |
-| `IsotropicExchange` | `exp[-i angle(XX+YY+ZZ)]` | two qubits, no `pauli` |
-
-Every operation is identity at parameter origin. A Pauli rotation above
-locality two must exactly match an input Hamiltonian term. Custom gates, fixed
-offsets, extra fields, redundant parameter directions, and semantic duplicates
-are rejected. The evaluator canonicalizes parameter directions, so an allowed
-global sign or scale does not create another optimizer trajectory.
-
-Within an operation's local Pauli word, letters pair with `qubits` in listed
-order; this is separate from the little-endian ordering of full-width labels.
-
-Parameter sharing is a physical claim. Good initial classes include
-translation-equivalent bulk edges, boundary versus bulk sites, one matching or
-coefficient class, and repeated excitation channels with a justified relative
-scale. Split one meaningful class at a time only after evidence shows sharing
-is too rigid.
-
-## Submit and evaluate candidates
-
-Submit a typed candidate under its structural hypothesis and cite symmetry
-evidence separately:
-
-```json
-{
-  "type": "submit_candidate",
-  "candidate_id": "boundary-hva-p1",
-  "hypothesis_id": "boundary-hva",
-  "spec": {
-    "version": 1,
-    "num_qubits": 4,
-    "operations": [
-      {
-        "gate": "XYExchange",
-        "qubits": [0, 1],
-        "parameter": "theta"
-      }
-    ]
-  },
-  "symmetry_evidence_ids": ["global-z"]
-}
-```
-
-Submission automatically runs the fixed evaluator audit. It validates the
-circuit and derives parameter use and conservative resources. Candidate
-actions must never provide energy, optimized values, parameter counts, gate
-counts, depth, custom operations, or hidden numeric answers.
-The evaluator alone writes probe residuals, optimizer traces, optimized
-bindings, parameter counts, gate counts, and depth.
-
-Advance one fixed evaluator stage at a time:
-
-```json
-{"type": "evaluate_candidate", "candidate_id": "boundary-hva-p1"}
-```
-
-The lifecycle is `audit -> AUDITED -> smoke -> SMOKE -> promotion -> PROMOTED`.
-A failed stage retires the candidate. Smoke uses 32 evaluations and one
-restart; promotion uses 96 evaluations and three restarts. Both must improve
-the zero-angle baseline by at least `max(1e-6, 1e-6*abs(baseline))`, and
-promotion must reproduce smoke within `5e-4`.
-
-Promotion requires a candidate from a different primary structural root to
-have already passed smoke. Before commit, promote that comparator under the
-same protocol. Commit compares the target against every passed promotion,
-including variants in its own lineage. A lower energy by more than `5e-4`
-dominates. At an energy tie, componentwise no-worse parameter count,
-conservative two-qubit count, total gate count, and depth, with one strict
-improvement, dominates.
-
-## Retire, revise, or terminate
-
-Retire exhausted branches with evidence-based reasons:
-
-```json
-{"type": "retire_candidate", "candidate_id": "boundary-hva-p1", "reason": "falsified by smoke"}
-```
-
-```json
-{"type": "retire_hypothesis", "hypothesis_id": "boundary-hva", "reason": "branch exhausted"}
-```
-
-A promoted candidate may be retired only after another passed promotion
-dominates it. Otherwise it must be committed or compared with a stronger
-branch.
-
-Terminate with exactly one of:
-
-```json
-{"type": "commit", "candidate_id": "boundary-hva-p1"}
-```
-
-```json
-{"type": "close_negative", "reason": "independent objective-active branches failed"}
-```
-
-Negative closure requires all branches to be terminal plus either an
-objective-active promotion failure or objective-active smoke failures from two
-independent roots. Flat phase-only failures do not establish negative closure.
-A positive decision proves only the recorded local promotion rule, not exact
-ground-state accuracy or generalization.
-
-Keep failed, retired, and revised branches: they prevent cycling and preserve
-evidence. Commit only a non-dominated result. State when no independent
-reference score was supplied.
-
-## Limits and costs
-
-The maximum budget is 100. Propose and revise cost `0.1`; submit and automatic
-audit cost `0.35`; smoke costs `2`; promotion costs `6`; retirement and
-terminal decisions cost `0`. Symmetry probe cost follows algebraic work.
-
-A run allows 200 events, three active hypotheses, two active candidates per
-hypothesis, 256 operations, 128 parameters, 64 uses per parameter, 512
-conservative two-qubit gates, 2048 total gates, depth 1024, and 1 MB per action.
-External `record_symmetry_probe` and `record_evaluation` actions are forbidden.
-New agent-chosen IDs match `[A-Za-z0-9][A-Za-z0-9_.:-]*` and contain at most 96
-characters.
-
-## Maintenance
-
-For ordinary implementation changes, run the relevant unit tests and
-`uv run python -m autovqe.harness check` before reporting completion.
+If `reference_energy` exists, success means meeting the requested relative
+error. The reference is for scoring only and must never shape or be copied
+into the ansatz. If no reference exists, report `best found`, not `ground
+state`. A converged optimizer is not success by itself: ansatz quality is the
+energy it can reach within the shared budget. Likewise, `target_reached` is an
+acceptance floor, not permission to end the total research budget early;
+confirm competing structures and simplify the best result.

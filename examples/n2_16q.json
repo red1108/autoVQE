@@ -1283,6 +1283,7 @@
     {"pauli": "ZIZIIIIIIIIIIIII","coeff": 0.12564220421203845},
     {"pauli": "ZZIIIIIIIIIIIIII","coeff": 0.15127201741575988}
   ],
+  "reference_energy": -107.5375951159713,
   "source_note": "PennyLane qchem.molecular_hamiltonian N2 STO-3G coordinates [0,0,-1.03708,0,0,1.03708], active_electrons=14, active_orbitals=8. Pauli labels converted to Qiskit big-endian convention.",
   "basis_gates": [
     "rx",

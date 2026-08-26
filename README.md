@@ -24,9 +24,10 @@ Start a fresh Codex task in this repository:
 
 ```text
 Create a goal to read program.md and optimize examples/h2_4q_bond_70pm.json.
-Use the evaluator's default time for every comparison. Stop immediately if
-target_reached=true; otherwise research for 28 minutes, restore the best ansatz,
-and report it before the 30-minute hard limit.
+Use the evaluator's default time for every comparison. From Hamiltonian width n,
+set H(n)=max(30, 60*2**(n-16)) minutes and R(n)=H(n)-2 minutes. Stop immediately
+if target_reached=true; otherwise restore and report the best ansatz at R(n),
+before the H(n) hard limit.
 ```
 
 Replace the path and budgets as needed. The agent establishes the baseline and
@@ -46,10 +47,12 @@ and new ones receive a small deterministic nonzero seed. Delete `results.tsv`
 and `.autovqe-state.json` for a fresh loop; use a new clone for an independent one.
 
 The per-candidate budget is `max(30, 60 * 2 ** (n - 16))` seconds for Hamiltonian
-width `n`; override it with `--seconds`. `L-BFGS-B` uses an adjoint gradient. If
-`reference_energy` exists, `target_reached` means relative error at most `1e-4`
-(0.01%) by default; adjust it with `--target-relative-error`. Without a reference,
-AutoVQE reports only `best found`, never a ground-state claim.
+width `n`; override it with `--seconds`. The same expression in minutes is the
+total hard limit `H(n)`; research ends at `R(n)=H(n)-2`. `L-BFGS-B` uses an
+adjoint gradient. If `reference_energy` exists, `target_reached` means relative
+error at most `1e-4` (0.01%) by default; adjust it with
+`--target-relative-error`. Without a reference, AutoVQE reports only `best
+found`, never a ground-state claim.
 
 ## Problem and ansatz formats
 

@@ -43,10 +43,11 @@ total gates, and depth—not unique parameter count alone.
    reach the intended sector rather than encode an answer.
 2. If this problem has no result, evaluate the empty or current ansatz once;
    otherwise use its existing result as the baseline.
-3. Spend the total research budget on bounded structural comparisons, never on
-   long or repeatedly continued refinement of a fixed ansatz. State one
-   falsifiable change, run it with the evaluator's per-candidate budget, and use
-   `--seconds` only when the user overrides that budget.
+3. Set the hard limit to `H(n)=max(30, 60*2**(n-16))` minutes and the research
+   deadline to `R(n)=H(n)-2`. Spend `R(n)` on bounded structural comparisons,
+   never long repeated refinement of one ansatz. State one falsifiable change,
+   use the evaluator's default candidate budget, and use `--seconds` only when
+   the user overrides it.
 4. Start each candidate with `L-BFGS-B`; new parameters receive a small
    deterministic nonzero seed. If energy does not improve, try one bounded
    `COBYLA` or `Powell` activation, then return that candidate to `L-BFGS-B`.

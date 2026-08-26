@@ -18,12 +18,24 @@ eigensolver, search for a known answer, insert optimized constants, or encode
 a solution in the input, initial state, or fixed gates. The evaluator is the
 only source of energies and optimized parameters.
 
-The ansatz consists only of typed Pauli rotations. They are always decomposed
-to the problem's native gate set. A many-qubit rotation is therefore charged
-for its full support, depth, and two-qubit gates; it is not a one-gate or
-one-parameter shortcut. Do not judge simplicity from unique parameter count
-alone. Use all reported costs: parameter occurrences, generator support,
-two-qubit gates, total gates, and depth.
+The gate allowlist is a Pauli word, `U1` (`XX+YY`), or `SU2`
+(`XX+YY+ZZ`). A freely chosen Pauli word may touch at most two qubits. A
+higher-weight word is allowed only when it is an input-Hamiltonian term or a
+component of a rank-one or rank-two fermionic excitation under an explicitly
+known mapping; expose every component and share its parameter. Arbitrary
+Pauli sums, higher-rank excitations, custom unitaries, fixed angles, and fitted
+per-operation scales are forbidden.
+
+Before claiming a symmetry, verify that its generator commutes with the
+Hamiltonian, the reference occupies a definite target sector, and the complete
+logical block preserves it. Full SU(2) requires all three total-spin
+components, not only magnetization. Translation, reflection, and point-group
+structure should use parameter sharing across symmetry orbits, not new gates.
+
+Every allowed gate is decomposed to the problem's native gate set. `U1` and
+`SU2` count as two and three parameter occurrences respectively. Judge
+simplicity from occurrences, generator support, native two-qubit gates, total
+gates, and depth—not unique parameter count alone.
 
 ## Loop
 

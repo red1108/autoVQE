@@ -2,6 +2,6 @@
 
 METHOD = "COBYLA"
 
-# Each item is (Pauli word, qubits, parameter name, scale).
-# Example: ("YX", (0, 1), "theta", 1.0)
+# Each item is (gate, qubits, parameter, scale).
+# Gate is a Pauli word, "U1" (= XX+YY), or "SU2" (= XX+YY+ZZ).
 OPERATIONS = []

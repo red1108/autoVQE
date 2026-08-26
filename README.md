@@ -58,10 +58,14 @@ An ansatz operation in `ansatz.py` is:
 
 ```python
 ("YX", (0, 1), "theta", 1.0)
+("U1", (0, 1), "exchange", 1.0)  # XX + YY
+("SU2", (2, 3), "spin", 1.0)     # XX + YY + ZZ
 ```
 
 This applies `Y` to qubit 0 and `X` to qubit 1. The last value may be `-1`,
 `-0.5`, `0.5`, or `1`. Reusing a parameter name intentionally shares it.
 `ansatz.py` is data-only: imports, functions, and executable expressions are
 rejected. Every operation is expanded into one-qubit basis changes, `RZ`, and
-`CX` gates before resources are counted; there are no opaque custom unitaries.
+`CX` gates before resources are counted. `U1` and `SU2` are expanded into two
+and three Pauli rotations, so shared parameters do not hide their cost. There
+are no opaque custom unitaries.

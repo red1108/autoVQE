@@ -17,6 +17,7 @@ from scipy.optimize import minimize
 
 METHODS = {"COBYLA", "L-BFGS-B", "Nelder-Mead", "Powell"}
 SCALES = {-1.0, -0.5, 0.5, 1.0}
+MACROS = {"U1": ("XX", "YY"), "SU2": ("XX", "YY", "ZZ")}
 
 
 def load_ansatz() -> tuple[str, list]:
@@ -81,35 +82,41 @@ def emit(circuit: QuantumCircuit, word: str, qubits: tuple[int, ...], angle) -> 
             circuit.h(qubit); circuit.s(qubit)
 
 
-def build(raw: dict, width: int) -> tuple[QuantumCircuit, list[str], Counter]:
+def build(raw: dict, width: int) -> tuple[QuantumCircuit, list[str], Counter, int]:
     if METHOD not in METHODS:
         raise ValueError(f"METHOD must be one of {sorted(METHODS)}")
     circuit = QuantumCircuit(width)
     for qubit, bit in enumerate(raw.get("initial_state_hint", [0] * width)):
         if bit:
             circuit.x(qubit)
-    parameters, counts = {}, Counter()
+    parameters, counts, support = {}, Counter(), 0
     for operation in OPERATIONS:
         if not isinstance(operation, (tuple, list)) or len(operation) != 4:
-            raise ValueError("each operation must be (word, qubits, parameter, scale)")
-        word, qubits, name, scale = operation
+            raise ValueError("each operation must be (gate, qubits, parameter, scale)")
+        gate, qubits, name, scale = operation
         qubits = tuple(qubits) if isinstance(qubits, (tuple, list)) else ()
+        words = MACROS.get(gate, (gate,)) if isinstance(gate, str) else ()
         valid = (
-            isinstance(word, str) and word and not set(word) - set("XYZ")
-            and len(word) == len(qubits) and len(set(qubits)) == len(qubits)
+            words and all(word and not set(word) - set("XYZ") for word in words)
+            and all(len(word) == len(qubits) for word in words)
+            and len(set(qubits)) == len(qubits)
             and all(type(q) is int and 0 <= q < width for q in qubits)
-            and isinstance(name, str) and name and float(scale) in SCALES
+            and isinstance(name, str) and name
+            and not isinstance(scale, bool) and isinstance(scale, (int, float))
+            and float(scale) in SCALES
         )
         if not valid:
             raise ValueError(f"invalid operation: {operation!r}")
         if name not in parameters:
             parameters[name] = Parameter(name)
-        counts[name] += 1
-        emit(circuit, word, qubits, float(scale) * parameters[name])
-    return circuit, list(parameters), counts
+        for word in words:
+            counts[name] += 1
+            support += len(word)
+            emit(circuit, word, qubits, float(scale) * parameters[name])
+    return circuit, list(parameters), counts, support
 
 
-def resources(circuit: QuantumCircuit, raw: dict, counts: Counter) -> dict:
+def resources(circuit: QuantumCircuit, raw: dict, counts: Counter, support: int) -> dict:
     compiled = transpile(
         circuit,
         basis_gates=raw.get("basis_gates") or None,
@@ -120,7 +127,7 @@ def resources(circuit: QuantumCircuit, raw: dict, counts: Counter) -> dict:
     return {
         "unique_parameters": len(counts),
         "parameter_occurrences": sum(counts.values()),
-        "generator_support": sum(len(operation[1]) for operation in OPERATIONS),
+        "generator_support": support,
         "two_qubit_gates": sum(len(item.qubits) == 2 for item in compiled.data),
         "total_gates": compiled.size(),
         "depth": compiled.depth(),
@@ -129,8 +136,8 @@ def resources(circuit: QuantumCircuit, raw: dict, counts: Counter) -> dict:
 
 def run(problem_path: str, seconds: float, target_error: float) -> dict:
     raw, hamiltonian, width = load_problem(problem_path)
-    circuit, names, counts = build(raw, width)
-    measured_resources = resources(circuit, raw, counts)
+    circuit, names, counts, support = build(raw, width)
+    measured_resources = resources(circuit, raw, counts, support)
     parameters = [circuit.get_parameter(name) for name in names]
     started, deadline = time.perf_counter(), time.perf_counter() + seconds
     best_energy, best_values, calls = float("inf"), np.zeros(len(names)), 0

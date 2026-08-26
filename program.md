@@ -53,13 +53,17 @@ total gates, and depth—not unique parameter count alone.
 4. Activate a new preparation seed or identity-initialized layer with `COBYLA`
    or `Powell`; once it yields a useful warm start, switch that same candidate
    to `L-BFGS-B`. Treat this as a bounded handoff within ordinary budgets.
-5. Grow from a graph matching into shared graph layers. To test whether sharing
-   is the bottleneck, preserve every gate, order, and scale, change parameter
-   names only, and warm-start the split structure from evaluator-owned values.
-6. Apply model structure as a measured hypothesis: for antiferromagnetic
-   Heisenberg systems, test a low-spin dimer preparation before growing `SU2`
-   interaction layers; for TFIM, split globally shared layer names into
-   reflection-orbit names before adding gates.
+5. Search structure before freedom: select a useful depth with parameters
+   shared over graph matchings or verified symmetry orbits. Only afterward
+   preserve every gate, order, and scale, split names, warm-start from
+   evaluator-owned values, and optimize. Do not interleave growth and splitting.
+6. Apply the model's ordered physical ladder before generic Pauli layers. For
+   antiferromagnetic Heisenberg systems, prepare low-spin dimers with a shared
+   `Y` seed and `GIVENS`; edge-color the interaction graph, then grow alternating
+   `SU2` matching cycles with one parameter per matching and cycle before an
+   edgewise name split. For TFIM, use one shared `Y` product-state seed, grow
+   globally shared alternating interaction-`ZZ` then field-`X` layers to choose
+   depth, and only then split each layer's names into reflection orbits.
 7. Keep lower energy, or a meaningfully simpler native circuit at an effective
    tie; otherwise revert. Use failures to choose a genuinely different
    structure. Convergence above target requires a structural change, not more

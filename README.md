@@ -18,8 +18,11 @@ Install Python 3.10+ and [`uv`](https://docs.astral.sh/uv/), then:
 
 ```bash
 uv sync
-uv run python evaluate.py examples/h2_4q_bond_70pm.json
+uv run python evaluate.py examples/h2_4q_bond_70pm.json --hypothesis "baseline"
 ```
+
+Each evaluation appends one compact comparison row to the ignored local file
+`results.tsv`.
 
 The default optimization budget is `max(5, 60 * 2 ** (n - 16))` seconds, where
 `n` is the Hamiltonian width. It is fixed for every candidate in that problem.
@@ -28,7 +31,7 @@ the optional target is a relative energy error (0.1% by default):
 
 ```bash
 uv run python evaluate.py examples/n2_16q_bond_110pm.json \
-  --target-relative-error 0.001
+  --target-relative-error 0.001 --hypothesis "number-preserving layer"
 ```
 
 Without a reference, AutoVQE reports the best energy it actually found; it

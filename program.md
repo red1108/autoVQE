@@ -12,8 +12,8 @@ depth, and testing parameter sharing without losing the energy.
 
 ## Boundary
 
-During a solve, edit only `ansatz.py` as code; `results.tsv` may hold local
-notes. Treat `evaluate.py` and the problem file as immutable. Never run an
+During a solve, edit only `ansatz.py` as code. Treat `evaluate.py`,
+`results.tsv`, and the problem file as immutable. Never run an
 eigensolver, search for a known answer, insert optimized constants, or encode
 a solution in the input, initial state, or fixed gates. The evaluator is the
 only source of energies and optimized parameters.
@@ -45,9 +45,10 @@ gates, and depth—not unique parameter count alone.
 2. Run the empty or current ansatz once to establish the baseline.
 3. State one falsifiable structural idea. Change `ansatz.py` in one coherent
    way: add, remove, reorder, split, or share rotations, or change optimizer.
-4. Run `evaluate.py` with its problem-defined default time budget; use
-   `--seconds` only when the user overrides it. Record the hypothesis, energy,
-   and resources in `results.tsv`.
+4. Run `evaluate.py --hypothesis "<one-line idea>"` with its problem-defined
+   default time budget; use `--seconds` only when the user overrides it. The
+   evaluator appends the formatted result to `results.tsv`; never edit it by
+   hand.
 5. Keep a change that improves energy. For an energy tie, keep it only when it
    makes the native circuit meaningfully simpler. Otherwise revert it.
 6. Use failures to choose the next idea; do not blindly enumerate circuits.

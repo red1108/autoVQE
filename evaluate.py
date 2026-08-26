@@ -180,15 +180,48 @@ def run(problem_path: str, seconds: float | None, target_error: float) -> dict:
     }
 
 
+def append_result(problem: str, hypothesis: str, result: dict) -> None:
+    path = Path(__file__).with_name("results.tsv")
+    resource = result["resources"]
+    columns = (
+        "problem", "energy", "relative_error", "unique_parameters",
+        "parameter_occurrences", "generator_support", "two_qubit_gates",
+        "total_gates", "depth", "evaluations", "budget_s", "elapsed_s",
+        "optimizer", "termination", "target_reached", "hypothesis",
+    )
+    relative = result["relative_error"]
+    row = (
+        Path(problem).name, f'{result["energy"]:.12g}',
+        "" if relative is None else f"{relative:.3e}",
+        resource["unique_parameters"], resource["parameter_occurrences"],
+        resource["generator_support"], resource["two_qubit_gates"],
+        resource["total_gates"], resource["depth"], result["evaluations"],
+        f'{result["time_budget_seconds"]:.3g}', f'{result["optimization_seconds"]:.4g}',
+        result["optimizer"], result["termination"],
+        "" if result["target_reached"] is None else int(result["target_reached"]),
+        hypothesis.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip(),
+    )
+    empty = not path.exists() or path.stat().st_size == 0
+    with path.open("a", encoding="utf-8", newline="") as output:
+        if empty:
+            output.write("\t".join(columns) + "\n")
+        output.write("\t".join(map(str, row)) + "\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("problem")
     parser.add_argument("--seconds", type=float)
     parser.add_argument("--target-relative-error", type=float, default=0.001)
+    parser.add_argument("--hypothesis", required=True)
     args = parser.parse_args()
     if (args.seconds is not None and args.seconds <= 0) or args.target_relative_error <= 0:
         parser.error("budgets and tolerances must be positive")
-    print(json.dumps(run(args.problem, args.seconds, args.target_relative_error), indent=2))
+    if not args.hypothesis.strip():
+        parser.error("hypothesis must be non-empty")
+    result = run(args.problem, args.seconds, args.target_relative_error)
+    append_result(args.problem, args.hypothesis, result)
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

@@ -134,8 +134,9 @@ def resources(circuit: QuantumCircuit, raw: dict, counts: Counter, support: int)
     }
 
 
-def run(problem_path: str, seconds: float, target_error: float) -> dict:
+def run(problem_path: str, seconds: float | None, target_error: float) -> dict:
     raw, hamiltonian, width = load_problem(problem_path)
+    seconds = seconds if seconds is not None else max(5.0, 60.0 * 2 ** (width - 16))
     circuit, names, counts, support = build(raw, width)
     measured_resources = resources(circuit, raw, counts, support)
     parameters = [circuit.get_parameter(name) for name in names]
@@ -168,6 +169,7 @@ def run(problem_path: str, seconds: float, target_error: float) -> dict:
         "energy": best_energy,
         "optimized_parameters": dict(zip(names, best_values.tolist(), strict=True)),
         "optimizer": METHOD,
+        "time_budget_seconds": seconds,
         "evaluations": calls,
         "optimization_seconds": time.perf_counter() - started,
         "termination": reason,
@@ -181,10 +183,10 @@ def run(problem_path: str, seconds: float, target_error: float) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("problem")
-    parser.add_argument("--seconds", type=float, required=True)
+    parser.add_argument("--seconds", type=float)
     parser.add_argument("--target-relative-error", type=float, default=0.001)
     args = parser.parse_args()
-    if args.seconds <= 0 or args.target_relative_error <= 0:
+    if (args.seconds is not None and args.seconds <= 0) or args.target_relative_error <= 0:
         parser.error("budgets and tolerances must be positive")
     print(json.dumps(run(args.problem, args.seconds, args.target_relative_error), indent=2))
 

@@ -18,15 +18,16 @@ Install Python 3.10+ and [`uv`](https://docs.astral.sh/uv/), then:
 
 ```bash
 uv sync
-uv run python evaluate.py examples/h2_4q_bond_70pm.json --seconds 30
+uv run python evaluate.py examples/h2_4q_bond_70pm.json
 ```
 
-`--seconds` is the optimization budget for each ansatz comparison. Keep it the
-same while comparing candidates. If a problem contains `reference_energy`, the
-optional target is a relative energy error (0.1% by default):
+The default optimization budget is `max(5, 60 * 2 ** (n - 16))` seconds, where
+`n` is the Hamiltonian width. It is fixed for every candidate in that problem.
+Use `--seconds` only to override it. If a problem contains `reference_energy`,
+the optional target is a relative energy error (0.1% by default):
 
 ```bash
-uv run python evaluate.py examples/n2_16q_bond_110pm.json --seconds 300 \
+uv run python evaluate.py examples/n2_16q_bond_110pm.json \
   --target-relative-error 0.001
 ```
 
@@ -35,13 +36,13 @@ does not claim that it found the ground state.
 
 ## Run the research loop with Codex
 
-Start a fresh Codex task in this repository and give it a problem path, a
-per-experiment budget, and a total research budget. For example:
+Start a fresh Codex task in this repository and give it a problem path and a
+total research budget. The evaluator derives the per-experiment time:
 
 ```text
-Read program.md and optimize examples/h2_4q_bond_70pm.json. Use 30 seconds for
-every comparison and spend at most 30 minutes on the whole search. Leave the
-best verified ansatz in ansatz.py and report its final evaluator output.
+Read program.md and optimize examples/h2_4q_bond_70pm.json. Use the evaluator's
+default time for every comparison and spend at most 30 minutes on the whole
+search. Leave the best ansatz in ansatz.py and report its final evaluator output.
 ```
 
 Replace the path and budgets as needed. `program.md` defines the closed

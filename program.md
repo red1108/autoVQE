@@ -45,8 +45,9 @@ gates, and depth—not unique parameter count alone.
 2. Run the empty or current ansatz once to establish the baseline.
 3. State one falsifiable structural idea. Change `ansatz.py` in one coherent
    way: add, remove, reorder, split, or share rotations, or change optimizer.
-4. Run `evaluate.py` with the same per-experiment time budget. Record the
-   hypothesis, energy, and resources in `results.tsv`.
+4. Run `evaluate.py` with its problem-defined default time budget; use
+   `--seconds` only when the user overrides it. Record the hypothesis, energy,
+   and resources in `results.tsv`.
 5. Keep a change that improves energy. For an energy tie, keep it only when it
    makes the native circuit meaningfully simpler. Otherwise revert it.
 6. Use failures to choose the next idea; do not blindly enumerate circuits.

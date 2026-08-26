@@ -17,8 +17,9 @@ from scipy.optimize import minimize
 
 METHODS = {"COBYLA", "L-BFGS-B", "Nelder-Mead", "Powell"}
 SCALES = {-1.0, -0.5, 0.5, 1.0}
-MACROS = {"U1": ("XX", "YY"), "SU2": ("XX", "YY", "ZZ")}
-
+MACROS = {"U1": (("XX", 1.0), ("YY", 1.0)), "GIVENS": (("YX", 0.5), ("XY", -0.5)),
+          "SU2": (("XX", 1.0), ("YY", 1.0), ("ZZ", 1.0))}
+STATE = Path(__file__).with_name(".autovqe-state.json")
 
 def load_ansatz() -> tuple[str, list]:
     tree = ast.parse(Path(__file__).with_name("ansatz.py").read_text(encoding="utf-8"))
@@ -36,13 +37,9 @@ def load_ansatz() -> tuple[str, list]:
         raise ValueError("ansatz.py must define METHOD and OPERATIONS")
     return values["METHOD"], values["OPERATIONS"]
 
-
 METHOD, OPERATIONS = load_ansatz()
 
-
-class TimeLimit(Exception):
-    pass
-
+class Stop(Exception): pass
 
 def load_problem(path: str) -> tuple[dict, SparsePauliOp, int]:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -63,7 +60,6 @@ def load_problem(path: str) -> tuple[dict, SparsePauliOp, int]:
         raise ValueError("invalid initial_state_hint")
     return raw, SparsePauliOp.from_list(terms).simplify(), width
 
-
 def emit(circuit: QuantumCircuit, word: str, qubits: tuple[int, ...], angle) -> None:
     for qubit, letter in zip(qubits, word, strict=True):
         if letter == "X":
@@ -81,24 +77,23 @@ def emit(circuit: QuantumCircuit, word: str, qubits: tuple[int, ...], angle) -> 
         elif letter == "Y":
             circuit.h(qubit); circuit.s(qubit)
 
-
-def build(raw: dict, width: int) -> tuple[QuantumCircuit, list[str], Counter, int]:
+def build(raw: dict, width: int) -> tuple[QuantumCircuit, list[str], Counter, int, dict]:
     if METHOD not in METHODS:
         raise ValueError(f"METHOD must be one of {sorted(METHODS)}")
     circuit = QuantumCircuit(width)
     for qubit, bit in enumerate(raw.get("initial_state_hint", [0] * width)):
         if bit:
             circuit.x(qubit)
-    parameters, counts, support = {}, Counter(), 0
+    parameters, counts, support, roles = {}, Counter(), 0, {}
     for operation in OPERATIONS:
         if not isinstance(operation, (tuple, list)) or len(operation) != 4:
             raise ValueError("each operation must be (gate, qubits, parameter, scale)")
         gate, qubits, name, scale = operation
         qubits = tuple(qubits) if isinstance(qubits, (tuple, list)) else ()
-        words = MACROS.get(gate, (gate,)) if isinstance(gate, str) else ()
+        components = MACROS.get(gate, ((gate, 1.0),)) if isinstance(gate, str) else ()
         valid = (
-            words and all(word and not set(word) - set("XYZ") for word in words)
-            and all(len(word) == len(qubits) for word in words)
+            components and all(word and not set(word) - set("XYZ") for word, _ in components)
+            and all(len(word) == len(qubits) for word, _ in components)
             and len(set(qubits)) == len(qubits)
             and all(type(q) is int and 0 <= q < width for q in qubits)
             and isinstance(name, str) and name
@@ -109,12 +104,28 @@ def build(raw: dict, width: int) -> tuple[QuantumCircuit, list[str], Counter, in
             raise ValueError(f"invalid operation: {operation!r}")
         if name not in parameters:
             parameters[name] = Parameter(name)
-        for word in words:
+        roles.setdefault(name, []).append([gate, list(qubits), float(scale)])
+        for word, weight in components:
             counts[name] += 1
             support += len(word)
-            emit(circuit, word, qubits, float(scale) * parameters[name])
-    return circuit, list(parameters), counts, support
+            emit(circuit, word, qubits, float(scale) * weight * parameters[name])
+    return circuit, list(parameters), counts, support, roles
 
+def continuation(problem: str, names: list[str], roles: dict) -> tuple[np.ndarray, int, list]:
+    try:
+        history = json.loads(STATE.read_text(encoding="utf-8"))
+        history = history if isinstance(history, list) else []
+        history = [item for item in history if isinstance(item, dict) and isinstance(item.get("roles"), dict) and isinstance(item.get("values"), dict)]
+    except (OSError, json.JSONDecodeError):
+        history = []
+    prior = [item for item in reversed(history) if item.get("problem") == problem]
+    chosen = max(prior, key=lambda item: sum(item.get("roles", {}).get(n) == roles[n] for n in names), default={})
+    initial, warm = np.zeros(len(names)), 0
+    for index, name in enumerate(names):
+        value = chosen.get("values", {}).get(name)
+        if chosen.get("roles", {}).get(name) == roles[name] and isinstance(value, (int, float)) and math.isfinite(value):
+            initial[index], warm = float(value), warm + 1
+    return initial, warm, history
 
 def resources(circuit: QuantumCircuit, raw: dict, counts: Counter, support: int) -> dict:
     compiled = transpile(
@@ -133,41 +144,48 @@ def resources(circuit: QuantumCircuit, raw: dict, counts: Counter, support: int)
         "depth": compiled.depth(),
     }
 
-
 def run(problem_path: str, seconds: float | None, target_error: float) -> dict:
     raw, hamiltonian, width = load_problem(problem_path)
-    seconds = seconds if seconds is not None else max(5.0, 60.0 * 2 ** (width - 16))
-    circuit, names, counts, support = build(raw, width)
+    seconds = seconds if seconds is not None else max(15.0, 60.0 * 2 ** (width - 16))
+    circuit, names, counts, support, roles = build(raw, width)
     measured_resources = resources(circuit, raw, counts, support)
     parameters = [circuit.get_parameter(name) for name in names]
+    problem_key = Path(problem_path).as_posix()
+    initial, warm, history = continuation(problem_key, names, roles)
+    reference = raw.get("reference_energy")
     started, deadline = time.perf_counter(), time.perf_counter() + seconds
-    best_energy, best_values, calls = float("inf"), np.zeros(len(names)), 0
+    best_energy, best_values, calls = float("inf"), initial.copy(), 0
 
     def objective(values) -> float:
         nonlocal best_energy, best_values, calls
         if time.perf_counter() >= deadline:
-            raise TimeLimit
+            raise Stop("time_budget")
         bound = circuit.assign_parameters(dict(zip(parameters, values, strict=True)), inplace=False)
         value = float(np.real(Statevector.from_instruction(bound).expectation_value(hamiltonian)))
         calls += 1
         if value < best_energy:
             best_energy, best_values = value, np.asarray(values).copy()
+            if names and reference is not None and abs(value - float(reference)) / max(abs(float(reference)), 1e-15) <= target_error:
+                raise Stop("target_reached")
         return value
 
     reason = "no_parameters"
     if names:
         try:
-            result = minimize(objective, np.zeros(len(names)), method=METHOD, options={"maxiter": 10**9})
+            result = minimize(objective, initial, method=METHOD, options={"maxiter": 10**9})
             reason = "converged" if result.success else "optimizer_stopped"
-        except TimeLimit:
-            reason = "time_budget"
+        except Stop as stop:
+            reason = str(stop)
     else:
         objective(np.zeros(0))
-    reference = raw.get("reference_energy")
     relative_error = None if reference is None else abs(best_energy - float(reference)) / max(abs(float(reference)), 1e-15)
+    values = dict(zip(names, best_values.tolist(), strict=True))
+    history.append({"problem": problem_key, "roles": roles, "values": values, "energy": best_energy})
+    STATE.write_text(json.dumps(history[-100:]), encoding="utf-8")
     return {
         "energy": best_energy,
-        "optimized_parameters": dict(zip(names, best_values.tolist(), strict=True)),
+        "optimized_parameters": values,
+        "warm_started_parameters": warm,
         "optimizer": METHOD,
         "time_budget_seconds": seconds,
         "evaluations": calls,
@@ -178,7 +196,6 @@ def run(problem_path: str, seconds: float | None, target_error: float) -> dict:
         "relative_error": relative_error,
         "target_reached": None if relative_error is None else relative_error <= target_error,
     }
-
 
 def append_result(problem: str, hypothesis: str, result: dict) -> None:
     path = Path(__file__).with_name("results.tsv")
@@ -207,7 +224,6 @@ def append_result(problem: str, hypothesis: str, result: dict) -> None:
             output.write("\t".join(columns) + "\n")
         output.write("\t".join(map(str, row)) + "\n")
 
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("problem")
@@ -222,7 +238,6 @@ def main() -> None:
     result = run(args.problem, args.seconds, args.target_relative_error)
     append_result(args.problem, args.hypothesis, result)
     print(json.dumps(result, indent=2))
-
 
 if __name__ == "__main__":
     main()

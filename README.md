@@ -21,10 +21,11 @@ uv sync
 uv run python evaluate.py examples/h2_4q_bond_70pm.json --hypothesis "baseline"
 ```
 
-Each evaluation appends one compact comparison row to the ignored local file
-`results.tsv`.
+Each evaluation appends one compact comparison row to ignored `results.tsv`.
+The evaluator also keeps ignored optimizer state so unchanged parameters can
+continue from values that it previously found; all remain variational.
 
-The default optimization budget is `max(5, 60 * 2 ** (n - 16))` seconds, where
+The default optimization budget is `max(15, 60 * 2 ** (n - 16))` seconds, where
 `n` is the Hamiltonian width. It is fixed for every candidate in that problem.
 Use `--seconds` only to override it. If a problem contains `reference_energy`,
 the optional target is a relative energy error (0.01% by default):
@@ -63,6 +64,7 @@ An ansatz operation in `ansatz.py` is:
 ```python
 ("YX", (0, 1), "theta", 1.0)
 ("U1", (0, 1), "exchange", 1.0)  # XX + YY
+("GIVENS", (0, 1), "mix", 1.0)   # (YX - XY) / 2
 ("SU2", (2, 3), "spin", 1.0)     # XX + YY + ZZ
 ```
 
@@ -70,6 +72,6 @@ This applies `Y` to qubit 0 and `X` to qubit 1. The last value may be `-1`,
 `-0.5`, `0.5`, or `1`. Reusing a parameter name intentionally shares it.
 `ansatz.py` is data-only: imports, functions, and executable expressions are
 rejected. Every operation is expanded into one-qubit basis changes, `RZ`, and
-`CX` gates before resources are counted. `U1` and `SU2` are expanded into two
-and three Pauli rotations, so shared parameters do not hide their cost. There
-are no opaque custom unitaries.
+`CX` gates before resources are counted. Macros are charged for every Pauli
+component, so shared parameters do not hide their cost. There are no opaque
+custom unitaries.

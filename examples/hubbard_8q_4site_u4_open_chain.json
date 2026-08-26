@@ -1,0 +1,48 @@
+{
+  "name": "hubbard_8q_4site_u4_open_chain",
+  "pauli_terms": [
+    { "pauli": "IIIIIXZX", "coeff": -0.5 },
+    { "pauli": "IIIIIYZY", "coeff": -0.5 },
+    { "pauli": "IIIIXZXI", "coeff": -0.5 },
+    { "pauli": "IIIIYZYI", "coeff": -0.5 },
+    { "pauli": "IIIXZXII", "coeff": -0.5 },
+    { "pauli": "IIIYZYII", "coeff": -0.5 },
+    { "pauli": "IIXZXIII", "coeff": -0.5 },
+    { "pauli": "IIYZYIII", "coeff": -0.5 },
+    { "pauli": "IXZXIIII", "coeff": -0.5 },
+    { "pauli": "IYZYIIII", "coeff": -0.5 },
+    { "pauli": "XZXIIIII", "coeff": -0.5 },
+    { "pauli": "YZYIIIII", "coeff": -0.5 },
+    { "pauli": "IIIIIIZZ", "coeff": 1.0 },
+    { "pauli": "IIIIZZII", "coeff": 1.0 },
+    { "pauli": "IIZZIIII", "coeff": 1.0 },
+    { "pauli": "ZZIIIIII", "coeff": 1.0 }
+  ],
+  "source_note": "Four-site spinful Fermi-Hubbard open chain with t=1 and U=4 in particle-hole-symmetric form U*(n_up-1/2)*(n_down-1/2). Interleaved Jordan-Wigner ordering uses q_(2s)=up and q_(2s+1)=down. Pauli labels use Qiskit big-endian convention. The reference energy was cross-checked by full-space and fixed N_up=N_down=2 exact diagonalization.",
+  "basis_gates": [
+    "rx",
+    "ry",
+    "rz",
+    "cx"
+  ],
+  "coupling_map": [
+    [0, 1], [1, 0],
+    [1, 2], [2, 1],
+    [2, 3], [3, 2],
+    [3, 4], [4, 3],
+    [4, 5], [5, 4],
+    [5, 6], [6, 5],
+    [6, 7], [7, 6]
+  ],
+  "initial_state_hint": [
+    1, 0, 0, 1, 1, 0, 0, 1
+  ],
+  "symmetry": {
+    "sites": 4,
+    "spin_orbitals": 8,
+    "particles": 4,
+    "n_up": 2,
+    "n_down": 2
+  },
+  "reference_energy": -5.953145308684553
+}

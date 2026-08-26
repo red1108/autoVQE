@@ -28,13 +28,13 @@ Start a fresh Codex task in this repository:
 
 ```text
 Create a goal to read program.md and optimize examples/h2_4q_bond_70pm.json.
-Use the evaluator's default time for every comparison. From Hamiltonian width n,
-set H(n)=max(30, 60*2**(n-16)) minutes and R(n)=H(n)-2 minutes. Stop immediately
-if target_reached=true; otherwise restore and report the best ansatz at R(n),
-before the H(n) hard limit.
+Use the evaluator's default time for every candidate and continue the
+keep/discard research loop until I interrupt you. Do not stop at convergence,
+a plateau, or target_reached=true. Before target, improve energy; after target,
+preserve the requested accuracy and simplify current_best.
 ```
 
-Replace the path and budgets as needed. The agent establishes the baseline and
+Replace the path or candidate budget as needed. The agent establishes the baseline and
 follows the closed loop and anti-cheating boundary in `program.md`.
 
 ## Evaluator
@@ -45,18 +45,21 @@ To evaluate one candidate manually:
 uv run python evaluate.py path/to/hamiltonian.json --hypothesis "baseline"
 ```
 
-Each run appends a compact row to ignored `results.tsv`. The evaluator keeps an
-ignored circuit-and-parameter checkpoint: matched parameters are warm-started
-and new ones receive a small deterministic nonzero seed. Delete `results.tsv`
-and `.autovqe-state.json` for a fresh loop; use a new clone for an independent one.
+Each run appends its `keep` or `discard` decision to ignored `results.tsv`. The
+evaluator keeps one ignored `current_best` circuit-and-parameter checkpoint per
+problem, warm-starts matching parameters, and restores `ansatz.py` after a
+discard. Delete `results.tsv` and `.autovqe-state.json` for a fresh loop; use a
+new clone for an independent one. `--restore-best` restores `current_best` after
+an interrupted edit.
 
 The per-candidate budget is `max(30, 60 * 2 ** (n - 16))` seconds for Hamiltonian
-width `n`; override it with `--seconds`. The same expression in minutes is the
-total hard limit `H(n)`; research ends at `R(n)=H(n)-2`. `L-BFGS-B` uses an
-adjoint gradient. If `reference_energy` exists, `target_reached` means relative
-error at most `1e-4` (0.01%) by default; adjust it with
-`--target-relative-error`. Without a reference, AutoVQE reports only `best
-found`, never a ground-state claim.
+width `n`; override it with `--seconds`. There is no total research limit: the
+loop ends when the user interrupts it. Parameterized candidates use the whole
+budget; convergence triggers a deterministic restart. `L-BFGS-B` uses an adjoint
+gradient. If `reference_energy` exists, `target_reached` means relative error at
+most `1e-4` (0.01%) by default and starts simplification; adjust it with
+`--target-relative-error`. Without a reference, AutoVQE reports only `best found`,
+never a ground-state claim.
 
 ## Problem and ansatz formats
 

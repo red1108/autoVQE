@@ -12,6 +12,7 @@ SCALES = {-1.0, -0.5, 0.5, 1.0}
 MACROS = {"U1": (("XX", 1.0), ("YY", 1.0)), "GIVENS": (("YX", 0.5), ("XY", -0.5)),
           "PAIR": (("YX", 0.5), ("XY", 0.5)), "SU2": (("XX", 1.0), ("YY", 1.0), ("ZZ", 1.0))}
 STATE = Path(__file__).with_name(".autovqe-state.json")
+RESOURCE_KEYS = ("unique_parameters", "parameter_occurrences", "generator_support", "two_qubit_gates", "total_gates", "depth")
 def finite(value) -> bool: return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
 def load_ansatz() -> tuple[str, list]:
     tree = ast.parse(Path(__file__).with_name("ansatz.py").read_text(encoding="utf-8"))
@@ -74,25 +75,24 @@ def build(raw: dict, width: int) -> tuple[QuantumCircuit, list[str], Counter, in
             support += len(word)
             emit(circuit, word, qubits, float(scale) * weight * parameters[name])
     return circuit, list(parameters), counts, support, roles, ordered
-def load_history() -> list:
-    try: history = json.loads(STATE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError): history = []
-    if not isinstance(history, list): return []
-    return [item for item in history if isinstance(item, dict) and isinstance(item.get("problem"), str)
-            and isinstance(item.get("roles"), dict) and isinstance(item.get("values"), dict) and finite(item.get("energy"))
-            and all(isinstance(role, list) and finite(item["values"].get(name)) for name, role in item["roles"].items())]
-def save_history(history: list) -> None:
+def load_state() -> dict:
+    try: state = json.loads(STATE.read_text(encoding="utf-8"))
+    except FileNotFoundError: return {"current_best": {}}
+    except (OSError, json.JSONDecodeError) as error: raise ValueError("invalid .autovqe-state.json; delete it to start fresh") from error
+    if not isinstance(state, dict) or not isinstance(state.get("current_best"), dict): raise ValueError("old .autovqe-state.json format; delete it and results.tsv to start fresh")
+    return state
+def save_state(state: dict) -> None:
     temporary = STATE.with_name(STATE.name + ".tmp")
-    temporary.write_text(json.dumps(history), encoding="utf-8")
-    temporary.replace(STATE)
+    temporary.write_text(json.dumps(state), encoding="utf-8"); temporary.replace(STATE)
 def role_counter(role) -> Counter:
     try: return Counter((gate, tuple(qubits), float(scale)) for gate, qubits, scale, *_ in role)
     except (TypeError, ValueError): return Counter()
 def structure(operations):
     try: return [(gate, tuple(qubits), float(scale)) for gate, qubits, _, scale in operations]
     except (TypeError, ValueError): return None
-def project(item: dict, names: list[str], roles: dict, operations: list) -> tuple[np.ndarray, int, int]:
-    initial, warm, covered = .04 * np.sin(np.arange(1, len(names) + 1)), 0, 0
+def project(item: dict | None, names: list[str], roles: dict, operations: list) -> tuple[np.ndarray, int]:
+    initial, warm = .04 * np.sin(np.arange(1, len(names) + 1)), 0
+    if item is None: return initial, warm
     previous, values = item.get("operations"), item["values"]
     if structure(previous) == structure(operations):
         mapped = {name: [] for name in names}
@@ -100,33 +100,25 @@ def project(item: dict, names: list[str], roles: dict, operations: list) -> tupl
             if old[2] in values: mapped[new[2]].append(float(values[old[2]]))
         for index, name in enumerate(names):
             if name in values and role_counter(item["roles"].get(name, [])) == role_counter(roles[name]): mapped[name] = [float(values[name])] * len(roles[name])
-            if len(mapped[name]) == len(roles[name]): initial[index], warm, covered = float(np.mean(mapped[name])), warm + 1, covered + len(mapped[name])
-        return initial, warm, covered
+            if len(mapped[name]) == len(roles[name]): initial[index], warm = float(np.mean(mapped[name])), warm + 1
+        return initial, warm
     old = {name: (role_counter(role), float(values[name])) for name, role in item["roles"].items()}
-    legacy = not isinstance(previous, list) and sum(map(len, item["roles"].values())) == sum(map(len, roles.values()))
     for index, name in enumerate(names):
-        current, choices = role_counter(roles[name]), []
-        if name in old and sum((current & old[name][0]).values()): choices = [old[name]]
-        elif legacy:
-            containers = [pair for pair in old.values() if current < pair[0]]
-            if containers:
-                size = min(sum(role.values()) for role, _ in containers)
-                choices = [pair for pair in containers if sum(pair[0].values()) == size]
-                if len(choices) != 1: choices = []
-            else: choices = [pair for pair in old.values() if pair[0] < current]
-        weights = [sum((current & role).values()) for role, _ in choices]
-        if sum(weights): initial[index], warm, covered = float(np.average([value for _, value in choices], weights=weights)), warm + 1, covered + min(sum(current.values()), sum(weights))
-    return initial, warm, covered
-def continuation(problem: str, names: list[str], roles: dict, operations: list) -> tuple[np.ndarray, int, list]:
-    history = load_history()
-    prior = [item for item in reversed(history) if item["problem"] == problem]
-    exact = [item for item in prior if item.get("operations") == operations]
-    if exact: initial, warm, _ = project(min(exact, key=lambda item: item["energy"]), names, roles, operations)
-    elif prior:
-        options = [(project(item, names, roles, operations), item) for item in prior]
-        initial, warm, _ = max(options, key=lambda pair: (pair[0][2], pair[0][1], -pair[1]["energy"]))[0]
-    else: initial, warm = .04 * np.sin(np.arange(1, len(names) + 1)), 0
-    return initial, warm, history
+        current = role_counter(roles[name])
+        if name in old and sum((current & old[name][0]).values()): initial[index], warm = old[name][1], warm + 1
+    return initial, warm
+def current(problem: str) -> tuple[dict, dict | None]:
+    state, item = load_state(), None
+    candidate = state["current_best"].get(problem)
+    valid = (isinstance(candidate, dict) and candidate.get("method") in METHODS and isinstance(candidate.get("operations"), list)
+             and isinstance(candidate.get("roles"), dict) and isinstance(candidate.get("values"), dict) and finite(candidate.get("energy"))
+             and isinstance(candidate.get("resources"), dict) and all(type(candidate["resources"].get(key)) is int and candidate["resources"][key] >= 0 for key in RESOURCE_KEYS)
+             and (candidate.get("relative_error") is None or finite(candidate.get("relative_error")))
+             and (candidate.get("target_reached") is None or type(candidate.get("target_reached")) is bool)
+             and all(finite(value) for value in candidate.get("values", {}).values()))
+    if candidate is not None and not valid: raise ValueError("invalid evaluator-owned current_best; delete state and results to start fresh")
+    if valid: item = candidate
+    return state, item
 def resources(circuit: QuantumCircuit, raw: dict, counts: Counter, support: int) -> dict:
     compiled = transpile(circuit, basis_gates=raw.get("basis_gates") or None, coupling_map=raw.get("coupling_map") or None,
                          optimization_level=1, seed_transpiler=7)
@@ -160,28 +152,38 @@ def adjoint(raw: dict, width: int, names: list[str], operations: list):
             co_state = rotate(co_state, encoded, -scale * values[index])
         return value, gradient
     return value_gradient
-def restore_best(problem_path: str) -> None:
+def write_ansatz(item: dict, raw: dict, width: int) -> None:
     global METHOD, OPERATIONS
-    raw, _, width = load_problem(problem_path)
-    problem, previous = Path(problem_path).as_posix(), (METHOD, OPERATIONS)
-    candidates = sorted((item for item in load_history() if item["problem"] == problem and item.get("method") in METHODS and isinstance(item.get("operations"), list)), key=lambda item: item["energy"])
-    for item in candidates:
-        METHOD, OPERATIONS = item["method"], item["operations"]
-        try:
-            built = build(raw, width)
-            if built[5] != item["operations"] or any(name not in item["values"] for name in built[1]): raise ValueError("state does not match its circuit")
-        except (TypeError, ValueError):
-            METHOD, OPERATIONS = previous
-            continue
-        Path(__file__).with_name("ansatz.py").write_text(f"METHOD = {METHOD!r}\n\nOPERATIONS = {json.dumps(OPERATIONS, indent=4)}\n", encoding="utf-8")
-        return
-    raise ValueError("no restorable evaluator-owned best ansatz")
+    previous, METHOD, OPERATIONS = (METHOD, OPERATIONS), item["method"], item["operations"]
+    try:
+        built = build(raw, width)
+        if built[5] != OPERATIONS or any(name not in item["values"] for name in built[1]): raise ValueError("state does not match its circuit")
+    except (TypeError, ValueError): METHOD, OPERATIONS = previous; raise
+    path, temporary = Path(__file__).with_name("ansatz.py"), STATE.with_name(STATE.name + ".ansatz.py")
+    temporary.write_text(f"METHOD = {METHOD!r}\n\nOPERATIONS = {json.dumps(OPERATIONS, indent=4)}\n", encoding="utf-8"); temporary.replace(path)
+def restore_best(problem_path: str) -> None:
+    raw, _, width = load_problem(problem_path); _, item = current(Path(problem_path).as_posix())
+    if item is None: raise ValueError("no restorable evaluator-owned current_best")
+    write_ansatz(item, raw, width)
+def simpler(candidate: dict, current_best: dict) -> bool:
+    return all(candidate["resources"][key] <= current_best["resources"][key] for key in RESOURCE_KEYS) and any(candidate["resources"][key] < current_best["resources"][key] for key in RESOURCE_KEYS)
+def decide(candidate: dict, current_best: dict | None, target_error: float) -> tuple[str, str]:
+    feasible = current_best is not None and current_best.get("relative_error") is not None and current_best["relative_error"] <= target_error
+    phase = "simplify" if feasible else "search"
+    if current_best is None: keep = True
+    elif feasible: keep = candidate["target_reached"] is True and simpler(candidate, current_best)
+    else:
+        tolerance = 1e-8 * max(1.0, abs(current_best["energy"]))
+        tied = abs(candidate["energy"] - current_best["energy"]) <= tolerance
+        keep = candidate["target_reached"] is True or candidate["energy"] < current_best["energy"] - tolerance or tied and simpler(candidate, current_best)
+    return phase, "keep" if keep else "discard"
 def run(problem_path: str, seconds: float | None, target_error: float) -> dict:
     raw, hamiltonian, width = load_problem(problem_path)
     seconds = seconds if seconds is not None else max(30.0, 60.0 * 2 ** (width - 16))
     circuit, names, counts, support, roles, operations = build(raw, width)
     measured_resources, parameters = resources(circuit, raw, counts, support), [circuit.get_parameter(name) for name in names]
-    initial, warm, history = continuation(problem := Path(problem_path).as_posix(), names, roles, operations)
+    state, current_best = current(problem := Path(problem_path).as_posix())
+    initial, warm = project(current_best, names, roles, operations)
     value_gradient = adjoint(raw, width, names, operations) if (analytic := METHOD == "L-BFGS-B" and bool(names)) else None
     reference, started = raw.get("reference_energy"), time.perf_counter()
     deadline, best_energy, best_values, calls = started + seconds, float("inf"), initial.copy(), 0
@@ -190,8 +192,6 @@ def run(problem_path: str, seconds: float | None, target_error: float) -> dict:
         calls += 1
         if value < best_energy:
             best_energy, best_values = value, np.asarray(values).copy()
-            if names and reference is not None and abs(value - float(reference)) / max(abs(float(reference)), 1e-15) <= target_error:
-                raise Stop("target_reached")
         if time.perf_counter() >= deadline: raise Stop("time_budget")
     def objective(values):
         if time.perf_counter() >= deadline: raise Stop("time_budget")
@@ -205,29 +205,28 @@ def run(problem_path: str, seconds: float | None, target_error: float) -> dict:
     reason = "no_parameters"
     try:
         if names:
-            options = {"maxiter": 10**9} | ({"maxfun": 10**9, "maxls": 50, "ftol": 1e-14, "gtol": 1e-9} if analytic else {})
-            result = minimize(objective, initial, method=METHOD, jac=analytic, options=options)
-            reason = "converged" if result.success else "optimizer_stopped"
+            options = {"maxiter": 10**9} | ({"maxfun": 10**9, "maxls": 50, "ftol": 1e-14, "gtol": 1e-9} if analytic else {}); restarts = 0
+            while True:
+                start = initial if not restarts else best_values + .04 * np.sin(np.arange(1, len(names) + 1) + restarts); minimize(objective, start, method=METHOD, jac=analytic, options=options); restarts += 1
         else: objective(np.zeros(0))
     except Stop as stop: reason = str(stop)
-    relative_error = None if reference is None else abs(best_energy - float(reference)) / max(abs(float(reference)), 1e-15)
-    values = dict(zip(names, best_values.tolist(), strict=True))
-    history.append({"problem": problem, "method": METHOD, "operations": operations, "roles": roles, "values": values, "energy": best_energy})
-    best = {}
-    for item in history:
-        if item["problem"] not in best or item["energy"] < best[item["problem"]]["energy"]: best[item["problem"]] = item
-    room = 100 - len(kept := list(best.values())[-100:])
-    save_history(kept + ([item for item in history if item not in kept][-room:] if room else []))
-    return {"energy": best_energy, "optimized_parameters": values, "warm_started_parameters": warm, "optimizer": METHOD,
+    relative_error, values = (None if reference is None else abs(best_energy - float(reference)) / max(abs(float(reference)), 1e-15)), dict(zip(names, best_values.tolist(), strict=True))
+    target_reached = None if relative_error is None else relative_error <= target_error
+    candidate = {"method": METHOD, "operations": operations, "roles": roles, "values": values, "energy": best_energy, "relative_error": relative_error, "target_reached": target_reached, "resources": measured_resources}
+    phase, decision = decide(candidate, current_best, target_error)
+    if decision == "keep": state["current_best"][problem] = candidate
+    else: write_ansatz(current_best, raw, width)
+    save_state(state)
+    return {"energy": best_energy, "optimized_parameters": values, "warm_started_parameters": warm, "optimizer": candidate["method"],
             "time_budget_seconds": seconds, "evaluations": calls, "optimization_seconds": time.perf_counter() - started,
             "termination": reason, "resources": measured_resources, "reference_energy": reference, "relative_error": relative_error,
-            "target_reached": None if relative_error is None else relative_error <= target_error}
+            "target_reached": target_reached, "phase": phase, "decision": decision}
 def append_result(problem: str, hypothesis: str, result: dict) -> None:
     path, resource = Path(__file__).with_name("results.tsv"), result["resources"]
-    columns = ("problem", "energy", "relative_error", "unique_parameters", "parameter_occurrences", "generator_support", "two_qubit_gates", "total_gates", "depth", "evaluations", "budget_s", "elapsed_s", "optimizer", "termination", "target_reached", "hypothesis")
+    columns = ("problem", "energy", "relative_error", "unique_parameters", "parameter_occurrences", "generator_support", "two_qubit_gates", "total_gates", "depth", "evaluations", "budget_s", "elapsed_s", "optimizer", "termination", "target_reached", "phase", "decision", "hypothesis")
     relative = result["relative_error"]
     row = (Path(problem).name, f'{result["energy"]:.12g}', "" if relative is None else f"{relative:.3e}", resource["unique_parameters"], resource["parameter_occurrences"], resource["generator_support"], resource["two_qubit_gates"], resource["total_gates"],
-           resource["depth"], result["evaluations"], f'{result["time_budget_seconds"]:.3g}', f'{result["optimization_seconds"]:.4g}', result["optimizer"], result["termination"], "" if result["target_reached"] is None else int(result["target_reached"]), hypothesis.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip())
+           resource["depth"], result["evaluations"], f'{result["time_budget_seconds"]:.3g}', f'{result["optimization_seconds"]:.4g}', result["optimizer"], result["termination"], "" if result["target_reached"] is None else int(result["target_reached"]), result["phase"], result["decision"], hypothesis.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip())
     empty = not path.exists() or path.stat().st_size == 0
     with path.open("a", encoding="utf-8", newline="") as output:
         if empty: output.write("\t".join(columns) + "\n")

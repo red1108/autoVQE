@@ -212,7 +212,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("problem")
     parser.add_argument("--seconds", type=float)
-    parser.add_argument("--target-relative-error", type=float, default=0.001)
+    parser.add_argument("--target-relative-error", type=float, default=0.0001)
     parser.add_argument("--hypothesis", required=True)
     args = parser.parse_args()
     if (args.seconds is not None and args.seconds <= 0) or args.target_relative_error <= 0:

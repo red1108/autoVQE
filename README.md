@@ -7,60 +7,56 @@ circuit, runs a fixed-time experiment, learns from the result, and repeats.
 The repository deliberately has only two Python files:
 
 - `ansatz.py` is the agent's laboratory notebook and the only code it edits.
-- `evaluate.py` is the fixed experiment: optimization, energy, and honest
-  native-circuit resource accounting.
+- `evaluate.py` is the fixed experiment: optimization, energy, and transparent
+  transpiled resource accounting.
 
 The eight Hamiltonians in `examples/` are demonstrations, not hidden answers.
 
-## Run
+## Quick start
 
 Install Python 3.10+ and [`uv`](https://docs.astral.sh/uv/), then:
 
 ```bash
 uv sync
-uv run python evaluate.py examples/h2_4q_bond_70pm.json --hypothesis "baseline"
 ```
 
-Each evaluation appends one compact comparison row to ignored `results.tsv`.
-The evaluator also keeps ignored optimizer state so unchanged parameters can
-continue from values that it previously found; all remain variational.
-`L-BFGS-B` uses the evaluator's adjoint gradient rather than finite differences.
-
-The default optimization budget is `max(30, 60 * 2 ** (n - 16))` seconds, where
-`n` is the Hamiltonian width. It is fixed for every candidate in that problem.
-This calibration targets `n <= 16`; set `--seconds` for larger problems or a
-different total budget. If a problem contains `reference_energy`, the optional
-target is a relative energy error (0.01% by default):
-
-```bash
-uv run python evaluate.py examples/n2_16q_bond_110pm.json \
-  --target-relative-error 0.0001 --hypothesis "number-preserving layer"
-```
-
-Without a reference, AutoVQE reports the best energy it actually found; it
-does not claim that it found the ground state.
-
-## Run the research loop with Codex
-
-Start a fresh Codex task in this repository and give it a problem path and a
-total research budget. The evaluator derives the per-experiment time:
+Start a fresh Codex task in this repository:
 
 ```text
 Create a goal to read program.md and optimize examples/h2_4q_bond_70pm.json.
-Use the evaluator's default time for every comparison. Stop immediately at the
-target; otherwise research for 28 minutes, restore the best ansatz as instructed,
-and report its final output before the 30-minute hard limit.
+Use the evaluator's default time for every comparison. Stop immediately if
+target_reached=true; otherwise research for 28 minutes, restore the best ansatz,
+and report it before the 30-minute hard limit.
 ```
 
-Replace the path and budgets as needed. `program.md` defines the closed
-research loop and its anti-cheating boundary.
+Replace the path and budgets as needed. The agent establishes the baseline and
+follows the closed loop and anti-cheating boundary in `program.md`.
+
+## Evaluator
+
+To evaluate one candidate manually:
+
+```bash
+uv run python evaluate.py path/to/hamiltonian.json --hypothesis "baseline"
+```
+
+Each run appends a compact row to ignored `results.tsv`. The evaluator keeps an
+ignored circuit-and-parameter checkpoint: matched parameters are warm-started
+and new ones receive a small deterministic nonzero seed. Delete `results.tsv`
+and `.autovqe-state.json` for a fresh loop; use a new clone for an independent one.
+
+The per-candidate budget is `max(30, 60 * 2 ** (n - 16))` seconds for Hamiltonian
+width `n`; override it with `--seconds`. `L-BFGS-B` uses an adjoint gradient. If
+`reference_energy` exists, `target_reached` means relative error at most `1e-4`
+(0.01%) by default; adjust it with `--target-relative-error`. Without a reference,
+AutoVQE reports only `best found`, never a ground-state claim.
 
 ## Problem and ansatz formats
 
 A problem is JSON with `pauli_terms` and optional `initial_state_hint`,
 `basis_gates`, `coupling_map`, and `reference_energy`. Pauli labels use Qiskit
-ordering: the rightmost letter acts on qubit 0. See `examples/` for complete
-inputs.
+ordering: the rightmost letter acts on qubit 0; `initial_state_hint[i]` is qubit
+`i`. See `examples/` for complete inputs.
 
 An ansatz operation in `ansatz.py` is:
 
@@ -72,10 +68,11 @@ An ansatz operation in `ansatz.py` is:
 ("SU2", (2, 3), "spin", 1.0)     # XX + YY + ZZ
 ```
 
-This applies `Y` to qubit 0 and `X` to qubit 1. The last value may be `-1`,
-`-0.5`, `0.5`, or `1`. Reusing a parameter name intentionally shares it.
+This applies `Y` to qubit 0 and `X` to qubit 1. Direct words contain only active
+`X/Y/Z` letters in qubit-tuple order; omit identity positions. The last value
+may be `-1`, `-0.5`, `0.5`, or `1`. Reusing a parameter name shares it.
 `ansatz.py` is data-only: imports, functions, and executable expressions are
 rejected. Every operation is expanded into one-qubit basis changes, `RZ`, and
-`CX` gates before resources are counted. Macros are charged for every Pauli
-component, so shared parameters do not hide their cost. There are no opaque
-custom unitaries.
+`CX` before accounting; supplied basis and coupling constraints are used for
+transpilation. Macros are charged for every component, so parameter sharing
+does not hide cost. There are no opaque custom unitaries.

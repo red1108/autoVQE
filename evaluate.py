@@ -36,8 +36,8 @@ def load_problem(path: str) -> tuple[dict, SparsePauliOp, int]:
         if not isinstance(label, str) or not label or len(label) != width or set(label) - set("IXYZ"): raise ValueError("invalid Pauli label")
         if not finite(coeff): raise ValueError("coefficients must be finite real numbers")
         terms.append((label, float(coeff)))
-    hint = raw.get("initial_state_hint", [0] * width)
-    if not isinstance(hint, list) or len(hint) != width or any(bit not in (0, 1) for bit in hint): raise ValueError("invalid initial_state_hint")
+    hint, reference = raw.get("initial_state_hint", [0] * width), raw.get("reference_energy")
+    if not isinstance(hint, list) or len(hint) != width or any(bit not in (0, 1) for bit in hint) or (reference is not None and not finite(reference)): raise ValueError("invalid initial_state_hint or reference_energy")
     return raw, SparsePauliOp.from_list(terms).simplify(), width
 def emit(circuit: QuantumCircuit, word: str, qubits: tuple[int, ...], angle) -> None:
     for qubit, letter in zip(qubits, word, strict=True):
@@ -125,7 +125,7 @@ def continuation(problem: str, names: list[str], roles: dict, operations: list) 
     elif prior:
         options = [(project(item, names, roles, operations), item) for item in prior]
         initial, warm, _ = max(options, key=lambda pair: (pair[0][2], pair[0][1], -pair[1]["energy"]))[0]
-    else: initial, warm = np.zeros(len(names)), 0
+    else: initial, warm = .04 * np.sin(np.arange(1, len(names) + 1)), 0
     return initial, warm, history
 def resources(circuit: QuantumCircuit, raw: dict, counts: Counter, support: int) -> dict:
     compiled = transpile(circuit, basis_gates=raw.get("basis_gates") or None, coupling_map=raw.get("coupling_map") or None,

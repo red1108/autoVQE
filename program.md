@@ -5,10 +5,6 @@ one closed research loop:
 
 `understand -> propose -> optimize -> compare -> learn -> keep or discard`
 
-Energy is the primary objective. When energies are effectively tied, the
-physically simpler circuit wins. Once growth stops helping, remove operations,
-reduce depth, and test parameter sharing without losing the energy.
-
 ## Boundary
 
 During a solve, edit only `ansatz.py` as code. Treat `evaluate.py`,
@@ -29,14 +25,14 @@ Arbitrary Pauli sums, higher-rank excitations, custom unitaries, fixed angles,
 and fitted per-operation scales are forbidden.
 
 Before claiming a symmetry, verify that its generator commutes with the
-Hamiltonian, the reference occupies a definite target sector, and the complete
-logical block preserves it. Full SU(2) requires all three total-spin
+Hamiltonian, the state entering its block occupies a definite target sector,
+and the complete block preserves it. Full SU(2) requires all three total-spin
 components, not only magnetization. Translation, reflection, and point-group
 structure should use parameter sharing across symmetry orbits, not new gates.
 
-Every allowed gate is decomposed to the problem's native gate set. `U1`,
-`GIVENS`, `PAIR`, and `SU2` count as two, two, two, and three occurrences.
-Judge simplicity from occurrences, generator support, native two-qubit gates,
+Every allowed gate is fully expanded and transpiled to supplied native
+constraints. `U1`, `GIVENS`, `PAIR`, and `SU2` count as two, two, two, and three
+occurrences. Judge simplicity from occurrences, generator support, two-qubit gates,
 total gates, and depth—not unique parameter count alone.
 
 ## Loop
@@ -45,27 +41,26 @@ total gates, and depth—not unique parameter count alone.
    initial occupation, repeated structure, and verified conserved quantities.
    A conserving circuit cannot change sector, so preparation must variationally
    reach the intended sector rather than encode an answer.
-2. Run the empty or current ansatz once to establish the baseline.
+2. If this problem has no result, evaluate the empty or current ansatz once;
+   otherwise use its existing result as the baseline.
 3. Spend the total research budget on bounded structural comparisons, never on
    long or repeatedly continued refinement of a fixed ansatz. State one
    falsifiable change, run it with the evaluator's per-candidate budget, and use
    `--seconds` only when the user overrides that budget.
-4. Newly introduced parameters receive a small deterministic, evaluator-owned
-   nonzero optimizer seed to avoid stationary identity embeddings. Use `COBYLA`
-   or `Powell` only for bounded derivative-free activation when needed, then
-   switch that same candidate to `L-BFGS-B`.
-5. Search structure before freedom: select a useful depth with parameters
-   shared over graph matchings or verified symmetry orbits. Only afterward
-   preserve every gate, order, and scale, split names, warm-start from
-   evaluator-owned values, and optimize. Do not interleave growth and splitting.
-6. Apply the model's ordered physical ladder before generic Pauli layers. For
-   antiferromagnetic Heisenberg systems, prepare low-spin dimers with a shared
-   `Y` seed and `GIVENS`; edge-color the interaction graph, then grow alternating
-   `SU2` matching cycles with one parameter per matching and cycle before an
-   edgewise name split. For TFIM, use one shared `Y` product-state seed, grow
-   globally shared alternating interaction-`ZZ` then field-`X` layers to choose
-   depth, and only then split each layer's names into reflection orbits.
-7. Keep lower energy, or a meaningfully simpler native circuit at an effective
+4. Start each candidate with `L-BFGS-B`; new parameters receive a small
+   deterministic nonzero seed. If energy does not improve, try one bounded
+   `COBYLA` or `Powell` activation, then return that candidate to `L-BFGS-B`.
+5. Bracket depth with shared parameters in multiplicative jumps instead of
+   sweeping adjacent depths. Change depth or sharing in one comparison, never
+   both. Split names at fixed structure; if useful, keep that scheme while
+   testing further growth.
+6. Derive physical ladders from observed terms, coefficients, graph, and
+   verified symmetries—not a filename or model label. For antiferromagnetic
+   isotropic `XX+YY+ZZ` graphs, test low-spin `Y`/`GIVENS` dimers followed by
+   edge-colored `SU2` matching cycles. For `ZZ` graphs with transverse `X`, test
+   a shared `Y` seed and alternating `ZZ`/`X` layers, then verified symmetry-orbit
+   name splits.
+7. Keep lower energy, or a meaningfully simpler transpiled circuit at an effective
    tie; otherwise revert. Use failures to choose a genuinely different
    structure. Convergence above target requires a structural change, not more
    optimization of the same ansatz.

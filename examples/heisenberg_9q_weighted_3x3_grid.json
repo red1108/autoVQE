@@ -71,5 +71,6 @@
   ],
   "initial_state_hint": [
     0, 0, 0, 0, 0, 0, 0, 0, 0
-  ]
+  ],
+  "reference_energy": -22.776496779893655
 }

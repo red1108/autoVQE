@@ -24,11 +24,13 @@ uv run python evaluate.py examples/h2_4q_bond_70pm.json --hypothesis "baseline"
 Each evaluation appends one compact comparison row to ignored `results.tsv`.
 The evaluator also keeps ignored optimizer state so unchanged parameters can
 continue from values that it previously found; all remain variational.
+`L-BFGS-B` uses the evaluator's adjoint gradient rather than finite differences.
 
-The default optimization budget is `max(15, 60 * 2 ** (n - 16))` seconds, where
+The default optimization budget is `max(30, 60 * 2 ** (n - 16))` seconds, where
 `n` is the Hamiltonian width. It is fixed for every candidate in that problem.
-Use `--seconds` only to override it. If a problem contains `reference_energy`,
-the optional target is a relative energy error (0.01% by default):
+This calibration targets `n <= 16`; set `--seconds` for larger problems or a
+different total budget. If a problem contains `reference_energy`, the optional
+target is a relative energy error (0.01% by default):
 
 ```bash
 uv run python evaluate.py examples/n2_16q_bond_110pm.json \
@@ -44,9 +46,10 @@ Start a fresh Codex task in this repository and give it a problem path and a
 total research budget. The evaluator derives the per-experiment time:
 
 ```text
-Read program.md and optimize examples/h2_4q_bond_70pm.json. Use the evaluator's
-default time for every comparison and spend at most 30 minutes on the whole
-search. Leave the best ansatz in ansatz.py and report its final evaluator output.
+Create a goal to read program.md and optimize examples/h2_4q_bond_70pm.json.
+Use the evaluator's default time for every comparison. Stop immediately at the
+target; otherwise research for 28 minutes, restore the best ansatz as instructed,
+and report its final output before the 30-minute hard limit.
 ```
 
 Replace the path and budgets as needed. `program.md` defines the closed
@@ -65,6 +68,7 @@ An ansatz operation in `ansatz.py` is:
 ("YX", (0, 1), "theta", 1.0)
 ("U1", (0, 1), "exchange", 1.0)  # XX + YY
 ("GIVENS", (0, 1), "mix", 1.0)   # (YX - XY) / 2
+("PAIR", (0, 1), "pair", 1.0)    # (YX + XY) / 2
 ("SU2", (2, 3), "spin", 1.0)     # XX + YY + ZZ
 ```
 

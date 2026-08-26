@@ -3,4 +3,4 @@ __pycache__/
 *.py[cod]
 .env
 results.tsv
-.autovqe-state.json
+.autovqe-state.json*

@@ -18,10 +18,12 @@ encode a solution in the input, initial state, or fixed gates. The evaluator
 is the only source of energies and optimized parameters.
 
 The gate allowlist is a Pauli word, `U1` (`XX+YY`), `GIVENS`
-(`(YX-XY)/2`), or `SU2` (`XX+YY+ZZ`). `GIVENS` is ordered and preserves total
-Z/Hamming weight, not full SU(2). A freely chosen Pauli word may touch at most
-two qubits. A higher-weight word is allowed only when it is an input-Hamiltonian
-term or a component of a rank-one or rank-two fermionic excitation under an
+(`(YX-XY)/2`), `PAIR` (`(YX+XY)/2`), or `SU2` (`XX+YY+ZZ`). `GIVENS`
+preserves total Z/Hamming weight; `PAIR` mixes sectors whose weights differ by
+two while preserving Hamming parity. Neither implies full SU(2). A freely
+chosen Pauli word may touch at most two qubits. A higher-weight word is allowed
+only when it is an input-Hamiltonian term or a component of a rank-one or
+rank-two fermionic excitation under an
 explicitly known mapping; expose every component and share its parameter.
 Arbitrary Pauli sums, higher-rank excitations, custom unitaries, fixed angles,
 and fitted per-operation scales are forbidden.
@@ -33,31 +35,39 @@ components, not only magnetization. Translation, reflection, and point-group
 structure should use parameter sharing across symmetry orbits, not new gates.
 
 Every allowed gate is decomposed to the problem's native gate set. `U1`,
-`GIVENS`, and `SU2` count as two, two, and three occurrences respectively. Judge
-simplicity from occurrences, generator support, native two-qubit gates, total
-gates, and depth—not unique parameter count alone.
+`GIVENS`, `PAIR`, and `SU2` count as two, two, two, and three occurrences.
+Judge simplicity from occurrences, generator support, native two-qubit gates,
+total gates, and depth—not unique parameter count alone.
 
 ## Loop
 
-1. Read the raw Hamiltonian. Inspect coefficients, locality, interaction
-   graph, initial occupation, repeated structure, and plausible conserved
-   quantities. Symmetry is one useful clue, not the whole ansatz.
+1. Read the raw Hamiltonian. Inspect coefficients, locality, interaction graph,
+   initial occupation, repeated structure, and verified conserved quantities.
+   A conserving circuit cannot change sector, so preparation must variationally
+   reach the intended sector rather than encode an answer.
 2. Run the empty or current ansatz once to establish the baseline.
-3. State one falsifiable structural idea. Change `ansatz.py` in one coherent
-   way: add, remove, reorder, split, or share rotations, or change optimizer.
-4. Run `evaluate.py --hypothesis "<one-line idea>"` with its problem-defined
-   default time budget; use `--seconds` only when the user overrides it. The
-   evaluator appends the formatted result to `results.tsv`; never edit it by
-   hand.
-5. Keep a change that improves energy. For an energy tie, keep it only when it
-   makes the native circuit meaningfully simpler. Otherwise revert it.
-6. Use failures to choose the next idea; do not blindly enumerate circuits.
-   Periodically challenge the current best with a genuinely different
-   structure, then simplify the winner.
-7. A time-limited promising run is unfinished: repeat it to continue from the
-   evaluator-owned values, and optionally refine a nonzero result with L-BFGS-B.
-   If it converges above target, return to structure search.
-8. Finish with the best ansatz in `ansatz.py` and rerun it for the final report.
+3. Spend the total research budget on bounded structural comparisons, never on
+   long or repeatedly continued refinement of a fixed ansatz. State one
+   falsifiable change, run it with the evaluator's per-candidate budget, and use
+   `--seconds` only when the user overrides that budget.
+4. Activate a new preparation seed or identity-initialized layer with `COBYLA`
+   or `Powell`; once it yields a useful warm start, switch that same candidate
+   to `L-BFGS-B`. Treat this as a bounded handoff within ordinary budgets.
+5. Grow from a graph matching into shared graph layers. To test whether sharing
+   is the bottleneck, preserve every gate, order, and scale, change parameter
+   names only, and warm-start the split structure from evaluator-owned values.
+6. Apply model structure as a measured hypothesis: for antiferromagnetic
+   Heisenberg systems, test a low-spin dimer preparation before growing `SU2`
+   interaction layers; for TFIM, split globally shared layer names into
+   reflection-orbit names before adding gates.
+7. Keep lower energy, or a meaningfully simpler native circuit at an effective
+   tie; otherwise revert. Use failures to choose a genuinely different
+   structure. Convergence above target requires a structural change, not more
+   optimization of the same ansatz.
+8. Finish with `evaluate.py ... --restore-best --hypothesis "final best"`; this
+   restores the lowest-energy structure without writing optimized numbers into
+   `ansatz.py`. If deliberately selecting a measured simpler tie, keep that
+   structure and rerun it normally instead.
 
 If `reference_energy` exists, success means meeting the requested relative
 error. The reference is for scoring only and must never shape or be copied

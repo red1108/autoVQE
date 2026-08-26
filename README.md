@@ -1,9 +1,7 @@
 # AutoVQE
 
 AutoVQE is inspired by Andrej Karpathy's
-[autoresearch](https://github.com/karpathy/autoresearch), adapting its compact,
-fixed-budget research loop to VQE ansatz discovery. Given a Pauli Hamiltonian,
-an agent edits one transparent circuit, runs an experiment, learns, and repeats.
+[autoresearch](https://github.com/karpathy/autoresearch), adapting its idea to VQE ansatz discovery. Finding the appropriate ansatz is a tedious task that requires a lot of trial and error. AutoVQE focuses on solving this problem. Given a Pauli Hamiltonian, your agents edits ansatz, runs an experiment, learns, improve, and repeats.
 
 The repository is intentionally compact. Its main files are:
 

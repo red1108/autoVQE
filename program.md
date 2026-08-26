@@ -50,9 +50,10 @@ total gates, and depth—not unique parameter count alone.
    long or repeatedly continued refinement of a fixed ansatz. State one
    falsifiable change, run it with the evaluator's per-candidate budget, and use
    `--seconds` only when the user overrides that budget.
-4. Activate a new preparation seed or identity-initialized layer with `COBYLA`
-   or `Powell`; once it yields a useful warm start, switch that same candidate
-   to `L-BFGS-B`. Treat this as a bounded handoff within ordinary budgets.
+4. Newly introduced parameters receive a small deterministic, evaluator-owned
+   nonzero optimizer seed to avoid stationary identity embeddings. Use `COBYLA`
+   or `Powell` only for bounded derivative-free activation when needed, then
+   switch that same candidate to `L-BFGS-B`.
 5. Search structure before freedom: select a useful depth with parameters
    shared over graph matchings or verified symmetry orbits. Only afterward
    preserve every gate, order, and scale, split names, warm-start from

@@ -92,7 +92,7 @@ def structure(operations):
     try: return [(gate, tuple(qubits), float(scale)) for gate, qubits, _, scale in operations]
     except (TypeError, ValueError): return None
 def project(item: dict, names: list[str], roles: dict, operations: list) -> tuple[np.ndarray, int, int]:
-    initial, warm, covered = np.zeros(len(names)), 0, 0
+    initial, warm, covered = .04 * np.sin(np.arange(1, len(names) + 1)), 0, 0
     previous, values = item.get("operations"), item["values"]
     if structure(previous) == structure(operations):
         mapped = {name: [] for name in names}

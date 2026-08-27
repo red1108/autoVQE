@@ -1,7 +1,7 @@
 # AutoVQE
 
 <div align="center">
-  <h2>AutoVQE Progress for Examples</h2>
+  <h4>AutoVQE Progress for Examples</h4>
   <img src="progress.svg" alt="AutoVQE Progress for Examples">
 </div>
 

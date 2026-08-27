@@ -1,6 +1,9 @@
 # AutoVQE
 
-![AutoVQE progress for examples](progress.svg)
+<div align="center">
+  <h2>AutoVQE Progress for Examples</h2>
+  <img src="progress.svg" alt="AutoVQE Progress for Examples">
+</div>
 
 AutoVQE is inspired by Andrej Karpathy's
 [autoresearch](https://github.com/karpathy/autoresearch), adapting its idea to VQE ansatz discovery. Finding the appropriate ansatz is a tedious task that requires a lot of trial and error. AutoVQE focuses on solving this problem. Given a Pauli Hamiltonian, your agents edits ansatz, runs an experiment, learns, improve, and repeats.

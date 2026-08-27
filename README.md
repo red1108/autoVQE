@@ -27,7 +27,7 @@ Install Python 3.10+ and [`uv`](https://docs.astral.sh/uv/), then:
 uv sync
 ```
 
-Start a fresh Codex task in this repository:
+For Codex:
 
 ```text
 Create a goal to read program.md and optimize examples/h2_4q_bond_70pm.json.
@@ -35,6 +35,13 @@ Use the evaluator's default time for every candidate and continue the
 keep/discard research loop until I interrupt you. Do not stop at convergence,
 a plateau, or target_reached=true. Before target, improve energy; after target,
 preserve the requested accuracy and simplify current_best.
+```
+
+For Claude Code:
+
+```text
+Read program.md and optimize examples/h2_4q_bond_70pm.json.
+Keep following its research loop until I interrupt you.
 ```
 
 Replace the path or candidate budget as needed. The agent establishes the baseline and
